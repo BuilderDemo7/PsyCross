@@ -1239,6 +1239,12 @@ static int ProcessGouraudPoly(P_TAG* polyTag)
 		MakeTexcoordTriangleZero(firstVertex, 1);
 		MakeColourTriangle(firstVertex, shadeTexOn, &poly->r0, &poly->r1, &poly->r2);
 
+		// Per-vertex fog factor packed into pad1/pad2 (game writes fog amount there).
+		// v0 shares v1's fog (code byte occupies v0's pad slot).
+		firstVertex[0]._p0 = poly->pad1;
+		firstVertex[1]._p0 = poly->pad1;
+		firstVertex[2]._p0 = poly->pad2;
+
 		g_vertexIndex += 3;
 
 #if defined(DEBUG_POLY_COUNT)
@@ -1280,6 +1286,12 @@ static int ProcessGouraudPoly(P_TAG* polyTag)
 		MakeVertexQuad(firstVertex, &poly->x0, &poly->x1, &poly->x3, &poly->x2, gteIndex);
 		MakeTexcoordQuadZero(firstVertex, 1);
 		MakeColourQuad(firstVertex, shadeTexOn, &poly->r0, &poly->r1, &poly->r3, &poly->r2);
+
+		// Per-vertex fog factor packed into pad1/pad2/pad3 (note: MakeColourQuad swaps v2/v3).
+		firstVertex[0]._p0 = poly->pad1;
+		firstVertex[1]._p0 = poly->pad1;
+		firstVertex[2]._p0 = poly->pad3;
+		firstVertex[3]._p0 = poly->pad2;
 
 		TriangulateQuad();
 
