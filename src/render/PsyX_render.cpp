@@ -575,6 +575,30 @@ float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 		"		    fragColor.xyz = floor(fragColor.xyz * 32.0 + 0.5) / 32.0;\n"\
 		"		}\n"
 
+/* Same dither as GPU_DITHERING but skips the `fragColor *= v_color`
+ * step — used by the main fragment shader where we now multiply by
+ * v_color and apply fog BEFORE dithering, so the dither + quantize is
+ * the very last operation on the fragment and the fog mix() can't
+ * smooth out the quantization steps that produce the visible noise.
+ *
+ * The original ordering (dither first, then fog mix) defeated the
+ * point of the 5-bit quantize: mix() interpolates between the
+ * quantized color and the fog color, producing smooth intermediate
+ * values that erase the dither pattern entirely. Always quantize
+ * last for visible PSX-style dither. */
+#	define GPU_DITHERING_NO_VCOLOR\
+		"		mat4 dither = mat4(\n"\
+		"			-4.0,  +0.0,  -3.0,  +1.0,\n"\
+		"			+2.0,  -2.0,  +3.0,  -1.0,\n"\
+		"			-3.0,  +1.0,  -4.0,  +0.0,\n"\
+		"			+3.0,  -1.0,  +2.0,  -2.0) / 255.0;\n"\
+		"		ivec2 dc = ivec2(fract(gl_FragCoord.xy / 4.0) * 4.0);\n"\
+		"		float dStrength = max(v_texcoord.w, u_ditherForce);\n"\
+		"		fragColor.xyz += vec3(dither[dc.x][dc.y] * dStrength);\n"\
+		"		if (u_ditherForce > 0.5) {\n"\
+		"		    fragColor.xyz = floor(fragColor.xyz * 32.0 + 0.5) / 32.0;\n"\
+		"		}\n"
+
 #	define GPU_ARRAY_FUNC\
 		"	float _idx2(vec2 array, int idx) { return array[idx]; }"
 
@@ -582,6 +606,10 @@ float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 
 #	define GPU_DITHERING\
 		"		fragColor *= v_color;\n"
+
+/* GLES 2 fallback: no dither (would need ivec2 / mat4 indexing). */
+#	define GPU_DITHERING_NO_VCOLOR\
+		""
 
 #	define GPU_ARRAY_FUNC\
 		"	float _idx2(vec2 array, int idx) { if(idx == 0) return array.x; else return array.y; }"
@@ -714,9 +742,9 @@ float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
-	"		\n"\
-	GPU_DITHERING\
+	"		fragColor *= v_color;\n"\
 	"		fragColor.rgb = mix(fragColor.rgb, u_fogColor, v_fogAmount);\n"\
+	GPU_DITHERING_NO_VCOLOR\
 	"	}\n"
 
 const char* gte_shader_4 =
