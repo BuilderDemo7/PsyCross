@@ -501,6 +501,7 @@ typedef struct
 	GLint projection3DLoc;
 	GLint bilinearFilterLoc;
 	GLint ditherForceLoc;
+	GLint pixelScaleLoc;
 	GLint texelSizeLoc;
 	GLint fogColorLoc;
 #endif
@@ -517,6 +518,7 @@ GLint u_projectionLoc;
 GLint u_projection3DLoc;
 GLint u_bilinearFilterLoc;
 GLint u_ditherForceLoc;
+GLint u_pixelScaleLoc;
 GLint u_texelSizeLoc;
 GLint u_fogColorLoc;
 
@@ -581,29 +583,29 @@ float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
  * the very last operation on the fragment and the fog mix() can't
  * smooth out the quantization steps that produce the visible noise.
  *
- * The original ordering (dither first, then fog mix) defeated the
- * point of the 5-bit quantize: mix() interpolates between the
- * quantized color and the fog color, producing smooth intermediate
- * values that erase the dither pattern entirely. Always quantize
- * last for visible PSX-style dither.
+ * Resolution-aware cell size: PSX dither is 4x4 pixels at the native
+ * 320-pixel width. We pass the viewport width in u_pixelScale (set to
+ * windowWidth / 320.0) so each PSX-pixel-equivalent on screen gets
+ * its own dither matrix lookup, keeping the pattern visually
+ * proportional to PSX regardless of window resolution.
  *
- * Cell scaling: PSX dither is 4x4 pixels at the native 320-pixel
- * width. At modern resolutions one PSX pixel maps to several screen
- * pixels, so a literal 4-pixel dither cell ends up sub-PSX-pixel-
- * sized and visually invisible. Sample gl_FragCoord through a /4.0
- * but multiply by a pixelScale so the cell is roughly PSX-pixel-
- * proportioned (≈3-6 screen pixels per PSX pixel at common windows).
- * pixelScale=2 keeps dither visible at 1024x768 without becoming
- * grossly chunky at lower resolutions. */
+ * Strength: the original PSX matrix range is -4..+3 (out of 255).
+ * Multiplied by u_ditherForce (0 or 1) it lands sub-half-step at 5-bit
+ * quantize and is barely visible. Scale by 1.6 so at the strongest
+ * matrix value (+3) the dither offset becomes ~0.019 — almost a full
+ * 5-bit step, pushing pixels distinctly across the quantization
+ * boundary. Still in spirit-of-PSX territory; if it ever feels too
+ * noisy we can dial back to 1.0. */
 #	define GPU_DITHERING_NO_VCOLOR\
 		"		mat4 dither = mat4(\n"\
 		"			-4.0,  +0.0,  -3.0,  +1.0,\n"\
 		"			+2.0,  -2.0,  +3.0,  -1.0,\n"\
 		"			-3.0,  +1.0,  -4.0,  +0.0,\n"\
 		"			+3.0,  -1.0,  +2.0,  -2.0) / 255.0;\n"\
-		"		ivec2 dc = ivec2(fract(gl_FragCoord.xy / 8.0) * 4.0);\n"\
+		"		float cellSize = max(u_pixelScale, 1.0);\n"\
+		"		ivec2 dc = ivec2(fract(gl_FragCoord.xy / cellSize) * 4.0);\n"\
 		"		float dStrength = max(v_texcoord.w, u_ditherForce);\n"\
-		"		fragColor.xyz += vec3(dither[dc.x][dc.y] * dStrength);\n"\
+		"		fragColor.xyz += vec3(dither[dc.x][dc.y] * dStrength * 1.6);\n"\
 		"		if (u_ditherForce > 0.5) {\n"\
 		"		    fragColor.xyz = floor(fragColor.xyz * 32.0 + 0.5) / 32.0;\n"\
 		"		}\n"
@@ -745,6 +747,7 @@ float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 	GPU_NEAREST_SAMPLE_FUNC\
 	"	uniform int bilinearFilter;\n"\
 	"	uniform float u_ditherForce;\n"\
+	"	uniform float u_pixelScale;\n"\
 	"	uniform vec3 u_fogColor;\n"\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0)\n"\
@@ -804,6 +807,7 @@ const char* gte_shader_32_rgba =
 	"	uniform sampler2D s_texture;\n"\
 	"	uniform int bilinearFilter;\n"\
 	"	uniform float u_ditherForce;\n"\
+	"	uniform float u_pixelScale;\n"\
 	"	uniform vec2 texelSize;\n"\
 	"	void main() {\n"\
 	"		vec2 tc = v_texcoord.xy * texelSize + texelSize * 0.5;\n"\
@@ -1025,6 +1029,7 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	
 	sh->bilinearFilterLoc = glGetUniformLocation(sh->shader, "bilinearFilter");
 	sh->ditherForceLoc = glGetUniformLocation(sh->shader, "u_ditherForce");
+	sh->pixelScaleLoc = glGetUniformLocation(sh->shader, "u_pixelScale");
 	sh->projectionLoc = glGetUniformLocation(sh->shader, "Projection");
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
 	sh->fogColorLoc = glGetUniformLocation(sh->shader, "u_fogColor");
@@ -1326,6 +1331,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		GR_SetShader(g_gte_shader_4.shader);
 		u_bilinearFilterLoc = g_gte_shader_4.bilinearFilterLoc;
 		u_ditherForceLoc = g_gte_shader_4.ditherForceLoc;
+		u_pixelScaleLoc = g_gte_shader_4.pixelScaleLoc;
 		u_projectionLoc = g_gte_shader_4.projectionLoc;
 		u_projection3DLoc = g_gte_shader_4.projection3DLoc;
 		u_texelSizeLoc = -1;
@@ -1335,6 +1341,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		GR_SetShader(g_gte_shader_8.shader);
 		u_bilinearFilterLoc = g_gte_shader_8.bilinearFilterLoc;
 		u_ditherForceLoc = g_gte_shader_8.ditherForceLoc;
+		u_pixelScaleLoc = g_gte_shader_8.pixelScaleLoc;
 		u_projectionLoc = g_gte_shader_8.projectionLoc;
 		u_projection3DLoc = g_gte_shader_8.projection3DLoc;
 		u_texelSizeLoc = -1;
@@ -1344,6 +1351,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		GR_SetShader(g_gte_shader_16.shader);
 		u_bilinearFilterLoc = g_gte_shader_16.bilinearFilterLoc;
 		u_ditherForceLoc = g_gte_shader_16.ditherForceLoc;
+		u_pixelScaleLoc = g_gte_shader_16.pixelScaleLoc;
 		u_projectionLoc = g_gte_shader_16.projectionLoc;
 		u_projection3DLoc = g_gte_shader_16.projection3DLoc;
 		u_texelSizeLoc = -1;
@@ -1353,6 +1361,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		GR_SetShader(g_gte_shader_32_rgba.shader);
 		u_bilinearFilterLoc = -1;
 		u_ditherForceLoc = -1;
+		u_pixelScaleLoc = -1;
 		u_projectionLoc = g_gte_shader_32_rgba.projectionLoc;
 		u_projection3DLoc = g_gte_shader_32_rgba.projection3DLoc;
 		u_texelSizeLoc = g_gte_shader_32_rgba.texelSizeLoc;
@@ -1369,19 +1378,15 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 	if (u_ditherForceLoc != -1)
 		glUniform1f(u_ditherForceLoc, g_cfg_psxDither ? 1.0f : 0.0f);
 
-	{
-		/* One-shot diag: log the resolved dither config + uniform location
-		 * the first time GR_SetTexture runs after init so we can confirm
-		 * what value is actually reaching the shader. Without this, "no
-		 * visible dither" could mean either the path runs but the math
-		 * is wrong, or the uniform never gets pushed. */
-		static int s_logged = 0;
-		if (!s_logged) {
-			s_logged = 1;
-			eprintf("[DITHER] g_cfg_psxDither=%d g_cfg_bilinearFiltering=%d ditherLoc=%d (push=%.1f)\n",
-			        g_cfg_psxDither, g_cfg_bilinearFiltering,
-			        (int)u_ditherForceLoc, g_cfg_psxDither ? 1.0f : 0.0f);
-		}
+	/* Pixel scale = window width / PSX native (320). Scales the dither
+	 * cell so each PSX-pixel-equivalent on screen gets its own matrix
+	 * lookup, keeping the pattern visually proportional to PSX
+	 * regardless of resolution. */
+	if (u_pixelScaleLoc != -1) {
+		float pixelScale = (g_windowWidth > 0)
+			? ((float)g_windowWidth / 320.0f)
+			: 1.0f;
+		glUniform1f(u_pixelScaleLoc, pixelScale);
 	}
 
 	if (g_dbg_texturelessMode) {
