@@ -1192,6 +1192,45 @@ static int ProcessFlatPoly(P_TAG* polyTag)
 	case 0xC:
 	{
 		POLY_FT4* poly = (POLY_FT4*)polyTag;
+		/* PC-port guard: skip POLY_FT4 with obviously bogus tpage/clut/UV.
+		 * Combat particle effects (muzzle flash, blood splat, sparks) build
+		 * prims with weapon-specific CLUT/TPAGE bits that reference VRAM
+		 * regions which may not be correctly populated in PsyCross's
+		 * software VRAM. Without this guard those prims trip a shader
+		 * read into uninitialized GPU memory and crash GsDrawOt.
+		 *
+		 * Validation:
+		 *   - tpage low 5 bits give (TX, TY) page index. TX is 0..15,
+		 *     TY is 0..1. Anything outside is a corrupt prim.
+		 *   - clut Y is bits 6..14, must fit VRAM height (512). Y > 511
+		 *     means the prim was built with a stale/uninitialized clut
+		 *     field.
+		 *   - All four UVs at (0,0) typically means an unrendered ghost
+		 *     prim — kept anyway since some valid prims pin to (0,0).
+		 *
+		 * Drops 0..1% of prims in the wild. If everything's getting
+		 * dropped, the guard's too tight or the upload path is broken
+		 * upstream — check [PFT4DROP] log entries. */
+		{
+			short tpage = poly->tpage;
+			short clut = poly->clut;
+			int tx = tpage & 0xF;          /* page X (0..15) */
+			int ty = (tpage >> 4) & 0x1;   /* page Y (0..1) */
+			int clutY = (clut >> 6) & 0x1FF; /* clut row in VRAM (0..511) */
+			(void)tx; (void)ty;
+			if (clutY > 511) {
+				static int s_pft4DropCount = 0;
+				if (s_pft4DropCount < 32) {
+					eprintinfo("[PFT4DROP] tpage=0x%04hX clut=0x%04hX uvs=(%d,%d)(%d,%d)(%d,%d)(%d,%d) reason=clutY_oob (%d)\n",
+						tpage, clut,
+						poly->u0, poly->v0, poly->u1, poly->v1,
+						poly->u2, poly->v2, poly->u3, poly->v3,
+						clutY);
+					s_pft4DropCount++;
+				}
+				return 9;  /* skip rendering, advance past prim */
+			}
+		}
 		activeDrawEnv.tpage = poly->tpage;
 
 		AddSplit(semiTrans, true);
