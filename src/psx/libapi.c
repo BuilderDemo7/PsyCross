@@ -5,6 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <direct.h>  /* _mkdir */
+#else
+#include <sys/stat.h>
+#endif
 #include "../PsyX_main.h"
 
 long sp = 0;
@@ -618,10 +623,35 @@ typedef struct {
 } McFileHandle;
 static McFileHandle s_handles[16] = { 0 };
 
+/* Locate the gamedata/save directory; create it on first use. Returns
+ * the static buffer (or NULL if creation fails — caller falls back to
+ * cwd-relative path). On Windows mkdir(dirname) succeeds idempotently
+ * via _mkdir which returns 0 on create / -1 + errno=EEXIST otherwise. */
+static const char* mc_save_dir(void)
+{
+	static char dir[64];
+	static int  s_initialised = 0;
+	if (!s_initialised) {
+		snprintf(dir, sizeof(dir), "gamedata/save");
+#if defined(_WIN32)
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		s_initialised = 1;
+	}
+	return dir;
+}
+
 static const char* mc_path_for_channel(int chan)
 {
-	static char buf[16];
-	snprintf(buf, sizeof(buf), "%d.MCD", chan);
+	static char buf[96];
+	const char* dir = mc_save_dir();
+	if (dir) {
+		snprintf(buf, sizeof(buf), "%s/%d.MCD", dir, chan);
+	} else {
+		snprintf(buf, sizeof(buf), "%d.MCD", chan);
+	}
 	return buf;
 }
 
