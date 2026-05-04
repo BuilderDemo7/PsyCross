@@ -866,11 +866,44 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
 				if (currentPacket != endPacket)
 				{
 					eprinterr("did not output valid primitive or ptag length is not valid (diff=%d)\n", endPacket-currentPacket);
+					/* One-shot dump: the corrupted prim's raw bytes
+					 * fingerprint the writer. Same approach that pinned
+					 * the knife OT corruption to func_800611C0 via the
+					 * recognizable .NHS. tail bytes from POLY_FT4 vertex
+					 * data. After the first dump, fall back to the
+					 * existing rate-limited summary above. */
+					static int s_badPrimDumped = 0;
+					if (!s_badPrimDumped) {
+						s_badPrimDumped = 1;
+						const uint32_t* w = reinterpret_cast<const uint32_t*>(basePacket);
+						eprintinfo("[OT-PRIM] FIRST corrupt prim at %p tagLen=%d code=0x%02x\n",
+							(void*)basePacket, tagLength,
+							reinterpret_cast<P_TAG*>(basePacket)->code);
+						eprintinfo("[OT-PRIM]   raw 64 bytes: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+							(unsigned)w[0], (unsigned)w[1], (unsigned)w[2], (unsigned)w[3],
+							(unsigned)w[4], (unsigned)w[5], (unsigned)w[6], (unsigned)w[7]);
+						eprintinfo("[OT-PRIM]                 %08x %08x %08x %08x %08x %08x %08x %08x\n",
+							(unsigned)w[8], (unsigned)w[9], (unsigned)w[10], (unsigned)w[11],
+							(unsigned)w[12], (unsigned)w[13], (unsigned)w[14], (unsigned)w[15]);
+					}
 				}
 			}
 			else if (tagLength > 32)
 			{
 				eprinterr("got invalid tag length %d, code %d\n", tagLength, reinterpret_cast<P_TAG*>(basePacket)->code);
+				static int s_badTagDumped = 0;
+				if (!s_badTagDumped) {
+					s_badTagDumped = 1;
+					const uint32_t* w = reinterpret_cast<const uint32_t*>(basePacket);
+					eprintinfo("[OT-PRIM] FIRST bad-tag-len at %p tagLen=%d\n",
+						(void*)basePacket, tagLength);
+					eprintinfo("[OT-PRIM]   raw 64 bytes: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+						(unsigned)w[0], (unsigned)w[1], (unsigned)w[2], (unsigned)w[3],
+						(unsigned)w[4], (unsigned)w[5], (unsigned)w[6], (unsigned)w[7]);
+					eprintinfo("[OT-PRIM]                 %08x %08x %08x %08x %08x %08x %08x %08x\n",
+						(unsigned)w[8], (unsigned)w[9], (unsigned)w[10], (unsigned)w[11],
+						(unsigned)w[12], (unsigned)w[13], (unsigned)w[14], (unsigned)w[15]);
+				}
 			}
 
 			GPUDrawSplit& lastSplit = g_splits[g_splitIndex];
