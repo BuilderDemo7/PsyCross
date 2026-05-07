@@ -984,6 +984,15 @@ void PsyX_UpdateInput()
 	// also poll events here
 	PsyX_Sys_DoPollEvent();
 
+	/* Re-assert cursor hidden every frame. SDL_ShowCursor(0) at init isn't
+	 * sticky on Windows: alt-tabbing back into fullscreen, or a window-mode
+	 * transition triggered by SDL itself, can flip cursor visibility back
+	 * on. The user kept seeing the OS arrow pinned at screen center every
+	 * gameplay screenshot. SDL_ShowCursor with the same value is a no-op
+	 * (just queries internal state), so calling it per-frame is free. */
+	if (SDL_ShowCursor(SDL_QUERY) != SDL_DISABLE)
+		SDL_ShowCursor(SDL_DISABLE);
+
 	if(!g_altKeyState)
 		PsyX_Pad_InternalPadUpdates();
 }
