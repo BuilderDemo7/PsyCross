@@ -192,6 +192,7 @@ extern void			GR_ReadFramebufferDataToVRAM();
  * textures, bypassing the swap-then-upload dance. Used by the paper-map
  * TIM-protect helper to defeat any unfound framebuffer→GPU-texture path. */
 extern void			GR_DirectUploadVRAMRegion(int x, int y, int w, int h);
+extern void			GR_DumpVRAM(const char* path);
 
 /* PC port: when non-zero, GR_StoreFrameBuffer and GR_ReadFramebufferDataToVRAM
  * are skipped. Set this during 2D screens that re-LoadImage TIMs into VRAM

@@ -2170,6 +2170,17 @@ void GR_DirectUploadVRAMRegion(int x, int y, int w, int h)
 #endif
 }
 
+/* PC port debug: dump the entire 1024x512 16-bit VRAM to a raw file so the
+ * loaded textures/CLUTs can be inspected offline (decode 5551). */
+void GR_DumpVRAM(const char* path)
+{
+	FILE* f = fopen(path, "wb");
+	if (!f)
+		return;
+	fwrite(vram, sizeof(unsigned short), VRAM_WIDTH * VRAM_HEIGHT, f);
+	fclose(f);
+}
+
 void GR_SwapWindow()
 {
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
