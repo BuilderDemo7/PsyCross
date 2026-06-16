@@ -100,60 +100,67 @@ static int PGXP_LookupHinted(int sx, int sy, unsigned short hint16, float* ox, f
  * (rawX,rawY = prim's stored x/y, the GTE output BEFORE the draw-env offset).
  * ofsX/ofsY are added so ppx/ppy line up with vertex.x/.y. pw=0 => shader
  * treats the vertex as affine. Only called when PGXP is on. */
-/* Coverage instrumentation: how many 3D vertices found their precise data vs
- * fell back to affine. Dumped ~once a second when PGXP is on so we can tell if
- * tweaking should target the hit rate or the math. */
-static unsigned int s_pgxpHit = 0, s_pgxpMiss = 0, s_pgxpFrames = 0;
-/* phase-1 diagnostics: which link of the deterministic chain fires */
-unsigned int g_pgxpDbgPut = 0;      /* PGXP_MapPut calls (store macro fired) */
-unsigned int g_pgxpDbgSetNext = 0;  /* PsyX_SetNextPrimPgxp calls */
-unsigned int g_pgxpDbgResolved = 0; /* verts resolved via MapGet in SetNext */
-unsigned int g_pgxpDbgPrimStore = 0;/* PgxpPrimStore calls (per-prim table) */
-unsigned int g_pgxpDbgBeginHit = 0; /* PGXP_BeginPrim found a table entry */
-unsigned int g_pgxpHitDet = 0;      /* deterministic hits in PgxpFillVertex */
+/* Coverage instrumentation: per 3D vertex, did it resolve precise data by the
+ * deterministic prim-field address (det), by the heuristic (x,y) ring (ring),
+ * or fall back to affine (miss)? Dumped ~once a second when PGXP is on. Also
+ * bumps the address-map generation once per frame (see s_pgxpGen). */
+static unsigned int s_pgxpDet = 0, s_pgxpRingHit = 0, s_pgxpMiss = 0, s_pgxpFrames = 0;
+extern "C" void PGXP_BumpGen(void);
 extern "C" void PGXP_CoverageTick(void)
 {
-	if (!g_PsxUsePgxp) { s_pgxpHit = s_pgxpMiss = 0; return; }
+	PGXP_BumpGen();
+	if (!g_PsxUsePgxp) { s_pgxpDet = s_pgxpRingHit = s_pgxpMiss = 0; return; }
 	if (++s_pgxpFrames >= 60)
 	{
-		unsigned int tot = s_pgxpHit + s_pgxpMiss;
+		unsigned int tot = s_pgxpDet + s_pgxpRingHit + s_pgxpMiss;
 		if (tot)
-			eprintinfo("[PGXP] coverage: %u/%u hits (%.1f%%) over %u frames | det=%u put=%u setNext=%u resolved=%u primStore=%u beginHit=%u\n",
-				s_pgxpHit, tot, 100.0 * (double)s_pgxpHit / (double)tot, s_pgxpFrames,
-				g_pgxpHitDet, g_pgxpDbgPut, g_pgxpDbgSetNext, g_pgxpDbgResolved, g_pgxpDbgPrimStore, g_pgxpDbgBeginHit);
-		s_pgxpHit = s_pgxpMiss = s_pgxpFrames = 0;
-		g_pgxpHitDet = g_pgxpDbgPut = g_pgxpDbgSetNext = g_pgxpDbgResolved = g_pgxpDbgPrimStore = g_pgxpDbgBeginHit = 0;
+			eprintinfo("[PGXP] coverage over %u frames: det=%u (%.1f%%) ring=%u (%.1f%%) miss=%u (%.1f%%)\n",
+				s_pgxpFrames,
+				s_pgxpDet,     100.0 * (double)s_pgxpDet     / (double)tot,
+				s_pgxpRingHit, 100.0 * (double)s_pgxpRingHit / (double)tot,
+				s_pgxpMiss,    100.0 * (double)s_pgxpMiss    / (double)tot);
+		s_pgxpDet = s_pgxpRingHit = s_pgxpMiss = s_pgxpFrames = 0;
 	}
 }
 
-/* ---- Deterministic coverage (phase 1) -------------------------------------
- * The (x,y)-key ring above is heuristic: world geometry bulk-transforms its
- * vertices into a scratch buffer and copies the integer coords into prims by
- * index, so the ring hint is stale for ~30% of vertices (they were pushed long
- * before the prim's addPrim). To match deterministically we instead key the
- * precise coord by the SCRATCH ADDRESS the GTE wrote (PGXP_MapPut, from the
- * store macros), then the emit site tells us which scratch entries a prim used
- * (PsyX_SetNextPrimPgxp) so we can park the resolved precise verts and store
- * them per-prim at addPrim. Order-independent: each vertex carries its integer
- * key so MakeVertex matches regardless of winding. Ring stays the fallback. */
-struct PgxpAddrEntry { uintptr_t key; float x, y, w; };
-#define PGXP_ADDR_BITS 16
+/* ---- Deterministic precise-coord map (keyed by destination address) --------
+ * The (x,y)-key ring above is heuristic and mismatches: two vertices that land
+ * on the same integer screen pixel within the search window swap precise data
+ * -> stretched / corrupt polygons (worst on characters + effect quads, which
+ * write screen coords straight into the prim packet). The fix: when the GTE
+ * writes a screen coord to a prim's vertex field, record that FIELD ADDRESS ->
+ * precise coord here (PGXP_MapPut, called from the store macros / libgs_stub
+ * model drawers). At draw time MakeVertex already holds each vertex's field
+ * pointer, so PgxpFillVertex resolves it by address — collision-free and
+ * winding-independent. The ring stays the fallback for geometry transformed
+ * into a scratch buffer and copied into prims by index (the field address was
+ * never GTE-written, so the address lookup misses).
+ *
+ * Packet memory is reused every frame, so each entry carries the frame
+ * generation it was written in; a lookup only accepts a current-generation
+ * entry, so a prim reusing last frame's address can never read a stale coord. */
+struct PgxpAddrEntry { uintptr_t key; unsigned gen; float x, y, w; };
+#define PGXP_ADDR_BITS 17
 #define PGXP_ADDR_SIZE (1 << PGXP_ADDR_BITS)
 #define PGXP_ADDR_MASK (PGXP_ADDR_SIZE - 1)
 static PgxpAddrEntry s_pgxpAddr[PGXP_ADDR_SIZE];
+static unsigned s_pgxpGen = 1;   /* bumped once per frame (PGXP_CoverageTick) */
 
-extern unsigned int g_pgxpDbgPut, g_pgxpDbgSetNext, g_pgxpDbgResolved, g_pgxpDbgPrimStore, g_pgxpDbgBeginHit, g_pgxpHitDet;
+extern "C" void PGXP_BumpGen(void) { s_pgxpGen++; }
+
 extern "C" void PGXP_MapPut(void* addr, float x, float y, float w)
 {
-	g_pgxpDbgPut++;
 	uintptr_t k = (uintptr_t)addr;
 	unsigned s = (unsigned)((k >> 2) * 2654435761u) & PGXP_ADDR_MASK;
 	for (int i = 0; i < 16; i++) {
 		PgxpAddrEntry* e = &s_pgxpAddr[(s + i) & PGXP_ADDR_MASK];
-		if (e->key == 0 || e->key == k) { e->key = k; e->x = x; e->y = y; e->w = w; return; }
+		/* take an exact-key slot, an unused slot, or one left by an old frame */
+		if (e->key == k || e->key == 0 || e->gen != s_pgxpGen) {
+			e->key = k; e->gen = s_pgxpGen; e->x = x; e->y = y; e->w = w; return;
+		}
 	}
 	PgxpAddrEntry* e = &s_pgxpAddr[s];   /* probe exhausted: overwrite base */
-	e->key = k; e->x = x; e->y = y; e->w = w;
+	e->key = k; e->gen = s_pgxpGen; e->x = x; e->y = y; e->w = w;
 }
 
 static bool PGXP_MapGet(void* addr, float* x, float* y, float* w)
@@ -162,16 +169,24 @@ static bool PGXP_MapGet(void* addr, float* x, float* y, float* w)
 	unsigned s = (unsigned)((k >> 2) * 2654435761u) & PGXP_ADDR_MASK;
 	for (int i = 0; i < 16; i++) {
 		const PgxpAddrEntry* e = &s_pgxpAddr[(s + i) & PGXP_ADDR_MASK];
-		if (e->key == k) { *x = e->x; *y = e->y; *w = e->w; return true; }
+		if (e->key == k)
+			return (e->gen == s_pgxpGen) ? (*x = e->x, *y = e->y, *w = e->w, true) : false;
 		if (e->key == 0) return false;
 	}
 	return false;
 }
 
-/* Parked precise verts for the prim currently being assembled. Filled by
- * PsyX_SetNextPrimPgxp at emit (before addPrim), copied into the per-prim
- * table at addPrim. Each entry tagged with its integer screen key so the
- * draw-time match is winding-independent. */
+/* ---- Per-prim parked verts for SCRATCH-copied geometry ---------------------
+ * bodyprog_80055028's world-mesh drawer transforms verts into a scratch buffer
+ * (whose addresses gte_stsxy3c recorded into the map above), then copies them
+ * into prims by index. The prim FIELD address was never GTE-written, so the
+ * address path can't serve it. Instead that drawer tells us which scratch slots
+ * each prim used via PsyX_SetNextPrimPgxp (called from its gated SH_PC_PORT emit
+ * site just before addPrim); we resolve those scratch addresses to precise
+ * coords, park them, store per-prim by P_TAG pointer at addPrim, and load them
+ * at draw (PGXP_BeginPrim). Each parked vert carries its integer screen key so
+ * the draw-time match is winding-independent. This is what keeps world floors
+ * perspective-correct. */
 struct PgxpVtx { int key; float x, y, w; };
 static PgxpVtx g_primPgxpNext[4];
 static int     g_primPgxpNextCount = 0;
@@ -180,7 +195,6 @@ static int     g_primPgxpNextValid = 0;
 extern "C" void PsyX_SetNextPrimPgxp(void* a0, void* a1, void* a2, void* a3)
 {
 	if (!g_PsxUsePgxp) return;
-	g_pgxpDbgSetNext++;
 	void* addrs[4] = { a0, a1, a2, a3 };
 	int n = 0;
 	for (int i = 0; i < 4; i++) {
@@ -192,14 +206,10 @@ extern "C" void PsyX_SetNextPrimPgxp(void* a0, void* a1, void* a2, void* a3)
 			n++;
 		}
 	}
-	g_pgxpDbgResolved += n;
 	g_primPgxpNextCount = n;
 	g_primPgxpNextValid = 1;
 }
 
-/* Per-prim parked verts, keyed by the prim (P_TAG) pointer — stable from
- * addPrim to draw, immune to the scratch buffer being reused by later meshes.
- * Mirrors g_szTable's lifecycle (cleared each GsDrawOt). */
 struct PgxpPrimEntry { uintptr_t key; int n; PgxpVtx v[4]; };
 #define PGXP_PRIM_BITS 13
 #define PGXP_PRIM_SIZE (1 << PGXP_PRIM_BITS)
@@ -208,7 +218,6 @@ static PgxpPrimEntry g_pgxpPrimTable[PGXP_PRIM_SIZE];
 
 static void PgxpPrimStore(const void* prim)
 {
-	g_pgxpDbgPrimStore++;
 	uintptr_t key = (uintptr_t)prim;
 	unsigned s = (unsigned)((key >> 2) * 2654435761u) & PGXP_PRIM_MASK;
 	for (int i = 0; i < 16; i++) {
@@ -221,8 +230,6 @@ static void PgxpPrimStore(const void* prim)
 	}
 }
 
-/* Current prim's parked set, loaded by PGXP_BeginPrim from the per-prim table
- * just before its vertices are built. */
 static const PgxpVtx* s_curPgxp = nullptr;
 static int s_curPgxpN = 0;
 
@@ -233,15 +240,27 @@ static void PGXP_BeginPrim(const void* prim)
 	unsigned s = (unsigned)((key >> 2) * 2654435761u) & PGXP_PRIM_MASK;
 	for (int i = 0; i < 16; i++) {
 		const PgxpPrimEntry* e = &g_pgxpPrimTable[(s + i) & PGXP_PRIM_MASK];
-		if (e->key == key) { s_curPgxp = e->v; s_curPgxpN = e->n; g_pgxpDbgBeginHit++; return; }
+		if (e->key == key) { s_curPgxp = e->v; s_curPgxpN = e->n; return; }
 		if (e->key == 0) return;
 	}
 }
 
-static inline void PgxpFillVertex(GrVertex* v, int rawX, int rawY, float ofsX, float ofsY, unsigned short hint)
+/* addr = the vertex's prim-field pointer (MakeVertex has it); rawX/rawY = the
+ * integer coord read from that field, used for the parked/ring matches. */
+static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int rawY, float ofsX, float ofsY, unsigned short hint)
 {
 	float fx, fy, fw;
-	/* 1) deterministic per-prim parked set (world geometry) — match by key */
+	/* 1) deterministic by prim-field address: direct-to-prim geometry
+	 *    (effect quads via gte_stsxy3_g3, character models via libgs_stub) */
+	if (PGXP_MapGet((void*)addr, &fx, &fy, &fw))
+	{
+		v->ppx = fx + ofsX;
+		v->ppy = fy + ofsY;
+		v->ppw = fw;
+		s_pgxpDet++;
+		return;
+	}
+	/* 2) deterministic per-prim parked set: scratch-copied world geometry */
 	if (s_curPgxpN)
 	{
 		const int key = (rawX & 0xFFFF) | (rawY << 16);
@@ -250,19 +269,18 @@ static inline void PgxpFillVertex(GrVertex* v, int rawX, int rawY, float ofsX, f
 				v->ppx = s_curPgxp[i].x + ofsX;
 				v->ppy = s_curPgxp[i].y + ofsY;
 				v->ppw = s_curPgxp[i].w;
-				s_pgxpHit++;
-				g_pgxpHitDet++;
+				s_pgxpDet++;
 				return;
 			}
 		}
 	}
-	/* 2) heuristic (x,y)-key ring (immediate prims, fallback) */
+	/* 3) heuristic (x,y)-key ring — immediate prims, fallback */
 	if (PGXP_LookupHinted(rawX, rawY, hint, &fx, &fy, &fw))
 	{
 		v->ppx = fx + ofsX;
 		v->ppy = fy + ofsY;
 		v->ppw = fw;
-		s_pgxpHit++;
+		s_pgxpRingHit++;
 	}
 	else
 	{
@@ -335,10 +353,11 @@ extern "C" void PsyX_SetNextPrimSz(unsigned short s0, unsigned short s1, unsigne
 extern "C" void PsyX_CaptureGteDepths(void* prim)
 {
 	/* PGXP: record the GTE ring position for this prim so MakeVertex* can find
-	 * its precise vertices at draw time. Harmless when PGXP off. */
+	 * its precise vertices (ring fallback) at draw time. Harmless when PGXP
+	 * off. */
 	PGXP_StampPrim(prim);
 
-	/* PGXP deterministic path: if the emit site resolved this prim's precise
+	/* PGXP scratch-geometry path: if the emit site resolved this prim's precise
 	 * verts (PsyX_SetNextPrimPgxp), park them per-prim now (stable to draw). */
 	if (g_primPgxpNextValid) {
 		PgxpPrimStore(prim);
@@ -596,9 +615,9 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 
 	if (g_PsxUsePgxp)
 	{
-		PgxpFillVertex(&vertex[0], p0[0], p0[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[1], p1[0], p1[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[2], p2[0], p2[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx);
 	}
 
 	ScreenCoordsToEmulator(vertex, 3);
@@ -632,10 +651,10 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 
 	if (g_PsxUsePgxp)
 	{
-		PgxpFillVertex(&vertex[0], p0[0], p0[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[1], p1[0], p1[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[2], p2[0], p2[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[3], p3[0], p3[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[3], p3, p3[0], p3[1], ofsX, ofsY, gteidx);
 	}
 
 	ScreenCoordsToEmulator(vertex, 4);
