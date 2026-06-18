@@ -270,7 +270,7 @@ static inline bool PgxpAccept(float fx, float fy, int rawX, int rawY)
 
 /* addr = the vertex's prim-field pointer (MakeVertex has it); rawX/rawY = the
  * integer coord read from that field, used for the parked/ring matches. */
-static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int rawY, float ofsX, float ofsY, unsigned short hint)
+static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int rawY, float ofsX, float ofsY, unsigned short hint, int slot)
 {
 	float fx, fy, fw;
 	/* 1) deterministic by prim-field address: direct-to-prim geometry
@@ -283,14 +283,25 @@ static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int r
 		s_pgxpDet++;
 		return;
 	}
-	/* 2) deterministic per-prim parked set (scratch-copied world + characters):
-	 *    the parked verts are this prim's own, so the drawn vertex's precise coord
-	 *    is the parked entry CLOSEST to its integer (x,y). Order-independent (the
-	 *    emit sites pass verts in varying orders) and collision-resistant (picks
-	 *    the right vertex when two share a pixel instead of the first key hit —
-	 *    that mismatch is what seamed/wobbled dense character meshes). */
+	/* 2) deterministic per-prim parked set (scratch-copied world + characters).
+	 *    The drawer parks verts in poly x0..x3 order and MakeVertex draws them in
+	 *    that same order, so parked slot `slot` IS this drawn vertex's own precise
+	 *    coord — use it directly (exact W). The old closest-(x,y) match grabbed a
+	 *    DIFFERENT slot's W when two corners shared a pixel (dense foliage), and
+	 *    since the shader scales position by W that warped them into spikes.
+	 *    Closest-(x,y) stays as the fallback for any emit site whose park order
+	 *    doesn't line up with the draw order (slot coord would then fail Accept). */
 	if (s_curPgxpN)
 	{
+		if (slot >= 0 && slot < s_curPgxpN && s_curPgxp[slot].w >= 0.0f &&
+		    PgxpAccept(s_curPgxp[slot].x, s_curPgxp[slot].y, rawX, rawY))
+		{
+			v->ppx = s_curPgxp[slot].x + ofsX;
+			v->ppy = s_curPgxp[slot].y + ofsY;
+			v->ppw = s_curPgxp[slot].w;
+			s_pgxpDet++;
+			return;
+		}
 		int best = -1; float bestD = 1e30f;
 		for (int i = 0; i < s_curPgxpN; i++) {
 			if (s_curPgxp[i].w < 0.0f) continue;       /* unresolved slot */
@@ -655,9 +666,9 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 
 	if (g_PsxUsePgxp)
 	{
-		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx, 0);
+		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx, 1);
+		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx, 2);
 	}
 
 	ScreenCoordsToEmulator(vertex, 3);
@@ -691,10 +702,10 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 
 	if (g_PsxUsePgxp)
 	{
-		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx);
-		PgxpFillVertex(&vertex[3], p3, p3[0], p3[1], ofsX, ofsY, gteidx);
+		PgxpFillVertex(&vertex[0], p0, p0[0], p0[1], ofsX, ofsY, gteidx, 0);
+		PgxpFillVertex(&vertex[1], p1, p1[0], p1[1], ofsX, ofsY, gteidx, 1);
+		PgxpFillVertex(&vertex[2], p2, p2[0], p2[1], ofsX, ofsY, gteidx, 2);
+		PgxpFillVertex(&vertex[3], p3, p3[0], p3[1], ofsX, ofsY, gteidx, 3);
 	}
 
 	ScreenCoordsToEmulator(vertex, 4);
