@@ -8,6 +8,7 @@
 
 #include "../platform.h"
 #include "../gpu/PsyX_GPU.h"
+#include "psx/gtereg.h"
 
 #include "PsyX/PsyX_render.h"
 #include "PsyX/PsyX_globals.h"
@@ -1768,19 +1769,46 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 				GR_Ortho2D(0.0f, psxW, psxH, 0.0f, -1.0f, 1.0f);
 			}
 
-			/* [ASPECT] one-time ground-truth dump of the ACTUAL runtime
-			 * projection inputs, so the on-screen aspect can be computed from
-			 * real values instead of my assumptions. */
+			/* [ASPECT] ground-truth dump of the ACTUAL runtime projection
+			 * inputs so the on-screen aspect/FOV can be computed from real
+			 * values instead of assumptions. Goes to g_logStream (=SilentHill.log
+			 * when debug logging is on) so it lands in the captured log, not
+			 * stderr. Logs once per distinct (disp,win,HorPlus,WS) state so the
+			 * 2D menu and the 3D gameplay framing are both captured. C2_H is the
+			 * GTE geom-screen distance (sets horizontal FOV); C2_OFX/OFY are the
+			 * projection center (>>16 = pixels). */
 			{
 				extern FILE* g_logStream;
-				static int s_aspectLogged = 0;
-				if (!s_aspectLogged && g_PcHorPlusEnabled) {
-					s_aspectLogged = 1;
-					fprintf(stderr, "[ASPECT] disp=%dx%d win=%dx%d psxAspect=%.4f winAspect=%.4f horScale=%.4f HorPlus=%d WS=%d PAR=%.4f\n",
+				FILE* aspOut = g_logStream ? g_logStream : stderr;
+				static unsigned s_aspSeen[8];
+				static int s_aspSeenN = 0;
+				/* viewport that the block below will pick (recomputed here). */
+				int dbgVpW = g_windowWidth, dbgVpX = 0;
+				const bool dbgPillar =
+					(g_PcHorPlusEnabled && g_PcWidescreenMode == 0) ||
+					(!g_PcHorPlusEnabled && g_PcMenuPillarbox);
+				if (dbgPillar && g_windowHeight > 0 && winAspect > psxAspect) {
+					dbgVpW = (int)(g_windowHeight * psxAspect + 0.5f);
+					dbgVpX = (g_windowWidth - dbgVpW) / 2;
+				}
+				const float dbgMargin = (g_PcHorPlusEnabled && horScale > 1.0f && g_PcWidescreenMode == 1)
+					? psxW * (horScale * PSX_NTSC_PIXEL_ASPECT - 1.0f) * 0.5f : 0.0f;
+				unsigned key = ((unsigned)(activeDispEnv.disp.w & 0x3FF) << 22) ^
+					((unsigned)(activeDispEnv.disp.h & 0x3FF) << 12) ^
+					((unsigned)(g_windowWidth & 0xFFF)) ^
+					((unsigned)(g_PcHorPlusEnabled ? 1u : 0u) << 31) ^
+					((unsigned)(g_PcWidescreenMode & 3) << 29);
+				int seen = 0;
+				for (int i = 0; i < s_aspSeenN; i++) if (s_aspSeen[i] == key) { seen = 1; break; }
+				if (!seen && s_aspSeenN < 8) {
+					s_aspSeen[s_aspSeenN++] = key;
+					fprintf(aspOut, "[ASPECT] disp=%dx%d win=%dx%d psxAspect=%.4f winAspect=%.4f horScale=%.4f HorPlus=%d WS=%d PAR=%.4f margin=%.1f vp=%d+%dx%d C2_H=%d OFX=%d OFY=%d\n",
 						(int)activeDispEnv.disp.w, (int)activeDispEnv.disp.h,
 						g_windowWidth, g_windowHeight, psxAspect, winAspect, horScale,
-						g_PcHorPlusEnabled, g_PcWidescreenMode, (float)PSX_NTSC_PIXEL_ASPECT);
-					if (g_logStream) fflush(g_logStream);
+						g_PcHorPlusEnabled, g_PcWidescreenMode, (float)PSX_NTSC_PIXEL_ASPECT,
+						dbgMargin, dbgVpX, dbgVpW, g_windowHeight,
+						(int)C2_H, (int)(C2_OFX >> 16), (int)(C2_OFY >> 16));
+					fflush(aspOut);
 				}
 			}
 		}
