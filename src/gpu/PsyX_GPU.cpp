@@ -1175,13 +1175,18 @@ static void AddSplit(bool semiTrans, bool textured)
 void DrawSplit(const GPUDrawSplit& split)
 {
 	{
-		static int splitLog = 0;
-		if (splitLog < 40 && split.numVerts > 0) {
-			eprintf("[DBG] DrawSplit: fmt=%d blend=%d verts=%d dfe=%d texId=%u clip=(%d,%d,%d,%d)\n",
-				split.texFormat, split.blendMode, split.numVerts, split.drawenv.dfe,
+		/* [WORLDSPLIT] Identify which render path the 3D WORLD uses. The old
+		 * cap of 40 only caught boot/title 2D prims (verts 6-18, dfe=1). World
+		 * geometry chunks have many more verts; log the first 40 big splits so
+		 * the gameplay world's dfe (-> enable=!dfe -> which GR_SetOffscreenState
+		 * branch / ortho) is visible in one in-game capture. */
+		static int bigSplitLog = 0;
+		if (bigSplitLog < 40 && split.numVerts >= 60) {
+			eprintf("[WORLDSPLIT] verts=%d dfe=%d fmt=%d blend=%d texId=%u clip=(%d,%d,%d,%d)\n",
+				split.numVerts, split.drawenv.dfe, split.texFormat, split.blendMode,
 				(unsigned)split.textureId, split.drawenv.clip.x, split.drawenv.clip.y,
 				split.drawenv.clip.w, split.drawenv.clip.h);
-			splitLog++;
+			bigSplitLog++;
 		}
 	}
 	if(split.debugText)
