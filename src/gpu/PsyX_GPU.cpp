@@ -195,6 +195,50 @@ static bool AffineGet(const void* prim) {
 static bool s_curPgxpAffine = false;
 static void PGXP_BeginPrim(const void* prim) { s_curPgxpAffine = AffineGet(prim); }
 
+/* ---- Sub-pixel weld (close PGXP cross-bone joint seams) ---------------------
+ * Even with complete coverage a thin residual seam survives: a joint shared by
+ * two bone meshes is TWO distinct verts at the same 3D point, and independent
+ * fixed-point matrix math per bone projects them up to ~1px apart. PSX integer
+ * rounding hid this; PGXP's sub-pixel positions expose it as a seam that shifts
+ * with the pose (flickers during animation). Snap a precise vert onto a near-
+ * coincident earlier vert THIS FRAME — same screen position within g_pgxpWeldPx
+ * AND near-identical depth W — so the shared point renders once. The depth gate
+ * is the safety: only verts that are genuinely the same 3D point merge; two
+ * different surfaces that merely overlap on screen never fuse. Gen-stamped per
+ * frame like the shadow table. Unlike the old weld this runs over COMPLETE
+ * coverage with a tight radius, so it only dedups coincident points — it is not
+ * papering over missing precise data. */
+float g_pgxpWeldPx     = 1.0f;   /* console WELD:  0 = off */
+float g_pgxpWeldWRatio = 1.04f;  /* console WELDW: max depth (W) ratio to weld */
+struct WeldEntry { unsigned gen; float x, y, w; };
+#define WELD_BITS 17
+#define WELD_SIZE (1u << WELD_BITS)
+#define WELD_MASK (WELD_SIZE - 1u)
+static WeldEntry s_weld[WELD_SIZE];
+static inline unsigned WeldHash(int ix, int iy) {
+	return ((unsigned)ix * 73856093u) ^ ((unsigned)iy * 19349663u);
+}
+static void WeldVertex(float* x, float* y, float* w)
+{
+	if (g_pgxpWeldPx <= 0.0f) return;
+	const float r2 = g_pgxpWeldPx * g_pgxpWeldPx;
+	int ix = (int)(*x < 0 ? *x - 0.5f : *x + 0.5f);
+	int iy = (int)(*y < 0 ? *y - 0.5f : *y + 0.5f);
+	int r = (int)(g_pgxpWeldPx + 0.999f);
+	if (r < 1) r = 1; else if (r > 4) r = 4;
+	for (int dy = -r; dy <= r; dy++)
+	for (int dx = -r; dx <= r; dx++) {
+		WeldEntry* e = &s_weld[WeldHash(ix + dx, iy + dy) & WELD_MASK];
+		if (e->gen != s_pgxpGen) continue;
+		float ex = e->x - *x, ey = e->y - *y;
+		if (ex * ex + ey * ey > r2) continue;
+		float lo = e->w < *w ? e->w : *w, hi = e->w < *w ? *w : e->w;
+		if (lo > 0.0f && hi <= lo * g_pgxpWeldWRatio) { *x = e->x; *y = e->y; *w = e->w; return; }
+	}
+	WeldEntry* e = &s_weld[WeldHash(ix, iy) & WELD_MASK];
+	e->gen = s_pgxpGen; e->x = *x; e->y = *y; e->w = *w;
+}
+
 /* Fill a GrVertex's precise PGXP fields (ppx/ppy/ppw) from the shadow at the
  * vertex's prim-field address. ppw>0 selects the shader's perspective path;
  * ppw=0 is affine. addr = the field pointer (MakeVertex has it); rawX/rawY = the
@@ -206,6 +250,7 @@ static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int r
 	}
 	float ox, oy, ow;
 	if (GetPreciseVertex(addr, *(const unsigned*)addr, rawX, rawY, ofsX, ofsY, &ox, &oy, &ow)) {
+		WeldVertex(&ox, &oy, &ow);
 		v->ppx = ox; v->ppy = oy; v->ppw = ow; s_pgxpDet++;
 	} else {
 		v->ppx = (float)v->x; v->ppy = (float)v->y; v->ppw = 0.0f; s_pgxpMiss++;
