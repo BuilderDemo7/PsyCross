@@ -222,21 +222,29 @@ static int     g_primPgxpSnapXY = 0;   /* per-prim: a character vertex -> weld i
  * coincide exactly. Both keep their precise position+W, so no faceting and no
  * seam. A depth (W) ratio guard stops two different surfaces that merely overlap
  * on screen from welding together. */
-struct WeldEntry { unsigned gen; float x, y, w; };
+struct WeldEntry { unsigned gen; unsigned bone; float x, y, w; };
 #define WELD_BITS 14
 #define WELD_SIZE (1 << WELD_BITS)
 #define WELD_MASK (WELD_SIZE - 1)
 static WeldEntry s_weld[WELD_SIZE];
-static unsigned  s_weldGen = 0;
-float g_pgxpWeldDistPx = 0.0f;    /* tunable (console WELD): 0 = weld OFF      */
+static unsigned  s_weldGen  = 0;
+static unsigned  s_weldBone = 0;  /* current bone within the character (see PsyX_PgxpNextBone) */
+float g_pgxpWeldDistPx = 3.0f;    /* tunable (console WELD): 0 = weld OFF      */
 float g_pgxpWeldWRatio = 1.30f;   /* tunable: max W (depth) ratio to weld     */
 int   g_pgxpCharPersp  = 1;       /* 1 = full perspective PGXP on chars (default,
                                    * no faceting/swim); 0 = affine texture     */
 
+/* Bumped once per bone mesh by the character draw loop. The weld only fuses two
+ * verts from DIFFERENT bones (a real shared joint) and never within one bone, so
+ * a generous radius can close knee/shoulder/neck seams without collapsing dense
+ * same-bone detail (e.g. the face — which a flat distance weld shredded on the
+ * foreshortened side). */
+extern "C" void PsyX_PgxpNextBone(void) { s_weldBone++; }
+
 static inline unsigned WeldHash(int ix, int iy) {
 	return ((unsigned)ix * 73856093u) ^ ((unsigned)iy * 19349663u);
 }
-static void WeldReset(void) { s_weldGen++; }   /* per character: stale all entries */
+static void WeldReset(void) { s_weldGen++; s_weldBone = 0; }   /* per character */
 static void WeldVertex(float* x, float* y, float* w) {
 	const float thr2 = g_pgxpWeldDistPx * g_pgxpWeldDistPx;
 	int ix = (int)(*x < 0 ? *x - 0.5f : *x + 0.5f);
@@ -245,13 +253,14 @@ static void WeldVertex(float* x, float* y, float* w) {
 	for (int dx = -1; dx <= 1; dx++) {
 		WeldEntry* e = &s_weld[WeldHash(ix + dx, iy + dy) & WELD_MASK];
 		if (e->gen != s_weldGen) continue;
+		if (e->bone == s_weldBone) continue;        /* same bone -> don't fuse (face detail) */
 		float ex = e->x - *x, ey = e->y - *y;
 		if (ex * ex + ey * ey > thr2) continue;
 		float lo = e->w < *w ? e->w : *w, hi = e->w < *w ? *w : e->w;
 		if (lo > 0.0f && hi <= lo * g_pgxpWeldWRatio) { *x = e->x; *y = e->y; *w = e->w; return; }
 	}
 	WeldEntry* e = &s_weld[WeldHash(ix, iy) & WELD_MASK];
-	e->gen = s_weldGen; e->x = *x; e->y = *y; e->w = *w;
+	e->gen = s_weldGen; e->bone = s_weldBone; e->x = *x; e->y = *y; e->w = *w;
 }
 
 /* Persistent "character" mode: while on, every bridged prim's verts are flagged

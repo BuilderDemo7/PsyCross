@@ -241,6 +241,10 @@ extern void PsyX_SetNextPrimSnapXY(void);
  * character bone-draw loop so all rigid segments snap to the pixel grid (no joint
  * seams) without touching the shared mesh drawer's emit sites. No-op when PGXP off. */
 extern void PsyX_SetPgxpSnapMode(int on);
+/* PGXP: bump the bone index within a character draw so the vertex weld only fuses
+ * verts from different bones (real joints), not dense same-bone detail (faces).
+ * Call once per bone mesh inside the PsyX_SetPgxpSnapMode bracket. No-op off. */
+extern void PsyX_PgxpNextBone(void);
 /* PGXP: record addr->precise from the gte_stsxy* store macros. Internal. */
 extern void PGXP_StoreAddr(void* addr, int slot);
 #ifdef __cplusplus
