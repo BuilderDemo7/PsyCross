@@ -81,6 +81,10 @@ float g_PsxWorldVScale = 0.872f;
  * unaffected. */
 float g_PsxWorldVShift = 20.0f;
 int   g_PsxFixedCamActive = 0;
+/* Set by the game while a cutscene is active. Cutscenes frame themselves with letterbox
+ * bars, so the gameplay vertical crop (g_PsxWorldVScale) is skipped while this is set —
+ * otherwise it scaled/clipped the bars + subtitles off the bottom of the frame. */
+int   g_PsxCutsceneActive = 0;
 }
 #define PSX_NTSC_PIXEL_ASPECT (g_PsxPixelAspect)
 
@@ -1770,9 +1774,12 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 				 * g_PsxWorldVScale of the buffer, top-anchored (keep ceiling, clip foreground),
 				 * which also zooms objects ~1/scale taller. psxH (aspect) stays full so the
 				 * horizontal + Hor+ logic is unchanged. Console `vfov` tunes it. */
+				/* Cutscenes frame themselves with letterbox bars — skip the crop there
+				 * (vscale 1.0) so the bars + subtitles aren't scaled/clipped off-screen. */
+				const float vscale = g_PsxCutsceneActive ? 1.0f : g_PsxWorldVScale;
 				const float vshift = g_PsxFixedCamActive ? g_PsxWorldVShift : 0.0f;
-				orthoTop = 0.0f                    - vshift;   // +shift = show higher content
-				orthoBot = psxH * g_PsxWorldVScale - vshift;
+				orthoTop = 0.0f          - vshift;   // +shift = show higher content
+				orthoBot = psxH * vscale - vshift;
 			}
 			const float psxAspect = psxW / psxH;
 			const float winAspect = (g_windowHeight > 0)
