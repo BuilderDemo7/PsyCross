@@ -309,7 +309,31 @@ int Lm_H(long long value, int sf) {
 	return value_12;
 }
 
-
+/* Centroid OT sort key for the GS TMD drawer. The library computed otz from a
+ * SINGLE vertex's depth cue (gte_stdp = the last vertex), so a large face (a box
+ * side) mis-sorts against a protruding part (an antenna) as the item rotates ->
+ * you see the inside through it. Recompute the cue from the AVERAGE view-space
+ * depth of the 3 verts, through the exact GTE cue path (gte_divide / Lm_E / F /
+ * Lm_H with the live DQA/DQB/H), so the key's scale + polarity match the original
+ * but the face is sorted by its real center. v = {vx,vy,vz}. */
+extern "C" long PsyX_OtzCentroid(const short* v0, const short* v1, const short* v2, int shift)
+{
+	const short* vv[3] = { v0, v1, v2 };
+	long long szsum = 0;
+	int i, h_over_sz3;
+	unsigned short szc;
+	for (i = 0; i < 3; i++) {
+		long long mac3 = ((long long)C2_TRZ << 12) + (long long)C2_R31 * vv[i][0] + (long long)C2_R32 * vv[i][1] + (long long)C2_R33 * vv[i][2];
+		long long sz = mac3 >> 12;
+		if (sz < 1) sz = 1; else if (sz > 0xffff) sz = 0xffff;
+		szsum += sz;
+	}
+	szc = (unsigned short)(szsum / 3);
+	if (szc < 1) szc = 1;
+	h_over_sz3 = Lm_E(gte_divide((unsigned short)C2_H, szc));
+	C2_MAC0 = int(F((long long)C2_DQB + ((long long)C2_DQA * h_over_sz3)));
+	return (long)Lm_H(m_mac0, 1) >> shift;
+}
 
 /* PGXP precise screen-coord FIFO, mirrors the GTE SXY0/SXY1/SXY2 FIFO so the
  * store macros can resolve a destination address to the precise float coord
