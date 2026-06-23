@@ -335,6 +335,25 @@ extern "C" long PsyX_OtzCentroid(const short* v0, const short* v1, const short* 
 	return (long)Lm_H(m_mac0, 1) >> shift;
 }
 
+/* Per-vertex view-space SZ for the GS TMD drawer, same math as PsyX_OtzCentroid
+ * but returning the raw SZ values. The GS drawer feeds these to PsyX_SetNextPrimSz
+ * before addPrim so each item face gets a true per-prim depth (g_szTable ->
+ * ApplyGtePerVertexDepth -> vertex z), which lets the GL depth test resolve an
+ * antenna face vs a body face that share one coarse OT bucket. Recomputed from
+ * the live rotation matrix so it's immune to the NormalClip GTE-register clobber.
+ * v = {vx,vy,vz}; for a triangle pass v3 == v2. */
+extern "C" void PsyX_PrimSz4(const short* v0, const short* v1, const short* v2, const short* v3, unsigned short out[4])
+{
+	const short* vv[4] = { v0, v1, v2, v3 };
+	int i;
+	for (i = 0; i < 4; i++) {
+		long long mac3 = ((long long)C2_TRZ << 12) + (long long)C2_R31 * vv[i][0] + (long long)C2_R32 * vv[i][1] + (long long)C2_R33 * vv[i][2];
+		long long sz = mac3 >> 12;
+		if (sz < 1) sz = 1; else if (sz > 0xffff) sz = 0xffff;
+		out[i] = (unsigned short)sz;
+	}
+}
+
 /* PGXP precise screen-coord FIFO, mirrors the GTE SXY0/SXY1/SXY2 FIFO so the
  * store macros can resolve a destination address to the precise float coord
  * the GTE just produced. Updated only when g_PsxUsePgxp. */

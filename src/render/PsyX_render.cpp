@@ -2313,15 +2313,25 @@ void GR_SwapWindow()
 	//glFinish();
 }
 
+/* Force the GL depth test on for the inventory/item pass even when the PGXP
+ * Z-buffer is off, so per-prim item depth (PsyX_SetNextPrimSzExact) can resolve
+ * overlapping faces (radio antenna vs body) that share one coarse OT bucket.
+ * Set by GsSortObject4J for the frame, cleared after the item OT is drawn. */
+extern "C" int g_forceItemDepth = 0;
+
 void GR_EnableDepth(int enable)
 {
-	if (g_PreviousDepthMode == enable)
+	/* Cache the ACTUAL applied state, not the requested `enable`, so a change in
+	 * g_cfg_pgxpZBuffer / g_forceItemDepth between same-`enable` calls re-applies. */
+	int applied = enable && (g_cfg_pgxpZBuffer || g_forceItemDepth);
+
+	if (g_PreviousDepthMode == applied)
 		return;
 
-	g_PreviousDepthMode = enable;
+	g_PreviousDepthMode = applied;
 
 #if USE_OPENGL
-	if (enable && g_cfg_pgxpZBuffer)
+	if (applied)
 		glEnable(GL_DEPTH_TEST);
 	else
 		glDisable(GL_DEPTH_TEST);
