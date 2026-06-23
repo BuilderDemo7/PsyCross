@@ -602,6 +602,7 @@ typedef struct
 	GLint texelSizeLoc;
 	GLint fogColorLoc;
 	GLint fogToBlackLoc;
+	GLint fogStrengthLoc;
 	GLint pgxpEnabledLoc;
 	GLint szMaxLoc;
 #endif
@@ -622,10 +623,15 @@ GLint u_pixelScaleLoc;
 GLint u_texelSizeLoc;
 GLint u_fogColorLoc;
 GLint u_fogToBlackLoc;
+GLint u_fogStrengthLoc;
 GLint u_pgxpEnabledLoc;
 GLint u_szMaxLoc;
 
 float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
+/* World fog density multiplier. 1.0 = native PC shader fog; >1 deepens it toward the
+ * PSX double-poly fog look the single-pass shader drops. Console `fogstr`; pushed as
+ * u_fogStrength and applied against v_fogAmount in the fragment shader. Default neutral. */
+float g_PsyX_FogStrength = 1.0f;
 /* Fog mode for the CURRENT blend: 1 = fade additive/subtractive prims (blood, muzzle
  * flash, etc.) toward black so they fade OUT in fog, instead of blending toward the
  * light fog color — which whitened their edges/faded pixels in daytime. Set by
@@ -878,16 +884,18 @@ int g_PsxFogToBlack = 0;
 	"	uniform float u_pixelScale;\n"\
 	"	uniform vec3 u_fogColor;\n"\
 	"	uniform int u_fogToBlack;\n"\
+	"	uniform float u_fogStrength;\n"\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0 && v_is3d > 0.5)\n"\
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
 	"		fragColor *= v_color;\n"\
+	"		float fogAmt = clamp(v_fogAmount * u_fogStrength, 0.0, 1.0);\n"\
 	"		if (u_fogToBlack > 0)\n"\
-	"			fragColor.rgb *= (1.0 - v_fogAmount);\n"\
+	"			fragColor.rgb *= (1.0 - fogAmt);\n"\
 	"		else\n"\
-	"			fragColor.rgb = mix(fragColor.rgb, u_fogColor, v_fogAmount);\n"\
+	"			fragColor.rgb = mix(fragColor.rgb, u_fogColor, fogAmt);\n"\
 	GPU_DITHERING_NO_VCOLOR\
 	"	}\n"
 
@@ -1168,6 +1176,7 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
 	sh->fogColorLoc = glGetUniformLocation(sh->shader, "u_fogColor");
 	sh->fogToBlackLoc = glGetUniformLocation(sh->shader, "u_fogToBlack");
+	sh->fogStrengthLoc = glGetUniformLocation(sh->shader, "u_fogStrength");
 	sh->pgxpEnabledLoc = glGetUniformLocation(sh->shader, "u_pgxpEnabled");
 	sh->szMaxLoc = glGetUniformLocation(sh->shader, "u_szMax");
 #endif
@@ -1454,6 +1463,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_texelSizeLoc = -1;
 		u_fogColorLoc = g_gte_shader_4.fogColorLoc;
 		u_fogToBlackLoc = g_gte_shader_4.fogToBlackLoc;
+		u_fogStrengthLoc = g_gte_shader_4.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_4.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_4.szMaxLoc;
 		break;
@@ -1467,6 +1477,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_texelSizeLoc = -1;
 		u_fogColorLoc = g_gte_shader_8.fogColorLoc;
 		u_fogToBlackLoc = g_gte_shader_8.fogToBlackLoc;
+		u_fogStrengthLoc = g_gte_shader_8.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_8.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_8.szMaxLoc;
 		break;
@@ -1480,6 +1491,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_texelSizeLoc = -1;
 		u_fogColorLoc = g_gte_shader_16.fogColorLoc;
 		u_fogToBlackLoc = g_gte_shader_16.fogToBlackLoc;
+		u_fogStrengthLoc = g_gte_shader_16.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_16.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_16.szMaxLoc;
 		break;
@@ -1493,6 +1505,7 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_texelSizeLoc = g_gte_shader_32_rgba.texelSizeLoc;
 		u_fogColorLoc = g_gte_shader_32_rgba.fogColorLoc;
 		u_fogToBlackLoc = g_gte_shader_32_rgba.fogToBlackLoc;
+		u_fogStrengthLoc = g_gte_shader_32_rgba.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_32_rgba.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_32_rgba.szMaxLoc;
 		break;
@@ -1517,6 +1530,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 
 	if (u_fogToBlackLoc != -1)
 		glUniform1i(u_fogToBlackLoc, g_PsxFogToBlack);
+
+	if (u_fogStrengthLoc != -1)
+		glUniform1f(u_fogStrengthLoc, g_PsyX_FogStrength);
 
 	/* Push the dither-force uniform every shader bind. Cheap (single
 	 * float upload) and ensures runtime config changes (if we add a
