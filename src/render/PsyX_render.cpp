@@ -85,6 +85,13 @@ int   g_PsxFixedCamActive = 0;
  * bars, so the gameplay vertical crop (g_PsxWorldVScale) is skipped while this is set —
  * otherwise it scaled/clipped the bars + subtitles off the bottom of the frame. */
 int   g_PsxCutsceneActive = 0;
+/* Set by the game around the 2D-UI ordering-table draw (OrderingTable2: map-message
+ * subtitles, screen fade, cutscene letterbox bars). When set, GR_SetOffscreenState
+ * draws that pass at FULL vertical ortho (vscale 1.0) so it isn't clipped by the Hor+
+ * world crop. The 3D world (OrderingTable0) keeps the crop, so 3D framing — including
+ * cutscenes — is unchanged. This replaces the old g_PsxCutsceneActive vscale skip
+ * (which un-cropped the whole cutscene frame and looked stretched). */
+int   g_PsxUIOrthoPass = 0;
 }
 #define PSX_NTSC_PIXEL_ASPECT (g_PsxPixelAspect)
 
@@ -1806,14 +1813,14 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 				 * g_PsxWorldVScale of the buffer, top-anchored (keep ceiling, clip foreground),
 				 * which also zooms objects ~1/scale taller. psxH (aspect) stays full so the
 				 * horizontal + Hor+ logic is unchanged. Console `vfov` tunes it. */
-				/* Cutscenes frame themselves with letterbox bars — skip the crop there
-				 * (vscale 1.0) so the bars + subtitles aren't scaled/clipped off-screen.
-				 * Also skip the fixed-cam vshift during cutscenes: a fixed-angle cutscene
-				 * shot (the alley match scene) is a fixed cam, so vshift slid the ortho —
-				 * and the letterbox bars — up by 20, breaking the bar alignment. vshift is
-				 * a gameplay framing aid only. */
-				const float vscale = g_PsxCutsceneActive ? 1.0f : g_PsxWorldVScale;
-				const float vshift = (g_PsxFixedCamActive && !g_PsxCutsceneActive) ? g_PsxWorldVShift : 0.0f;
+				/* The world (OT0) is ALWAYS cropped — gameplay and cutscenes alike — so
+				 * 3D framing matches PSX/DuckStation (the old cutscene vscale-skip un-cropped
+				 * the whole frame and read as stretched). The 2D UI pass (g_PsxUIOrthoPass:
+				 * OT2 — subtitles, fade, cutscene letterbox bars) instead gets full vertical
+				 * ortho so it isn't scaled/clipped off the bottom. vshift is a gameplay
+				 * framing aid only (skipped for cutscenes and for the UI pass). */
+				const float vscale = g_PsxUIOrthoPass ? 1.0f : g_PsxWorldVScale;
+				const float vshift = (g_PsxFixedCamActive && !g_PsxCutsceneActive && !g_PsxUIOrthoPass) ? g_PsxWorldVShift : 0.0f;
 				orthoTop = 0.0f          - vshift;   // +shift = show higher content
 				orthoBot = psxH * vscale - vshift;
 			}
