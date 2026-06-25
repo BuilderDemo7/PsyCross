@@ -24,6 +24,18 @@ find_package(SDL2 REQUIRED)
 target_link_libraries(psycross_static ${SDL2_LIBRARIES})
 target_include_directories(psycross_static PRIVATE ${SDL2_INCLUDE_DIRS})
 
-find_package(OPENAL REQUIRED)
-target_link_libraries(psycross_static OpenAL)
+find_package(OpenAL REQUIRED)
+# find_package(OpenAL) exposes different handles depending on how OpenAL was
+# found: the imported target OpenAL::OpenAL (openal-soft's CMake config, or
+# CMake's FindOpenAL in 3.x), a bare `OpenAL` target (some MSYS2 configs), or
+# just the OPENAL_LIBRARY / OPENAL_INCLUDE_DIR variables. Prefer the imported
+# target; fall back so this links on both MinGW and Linux.
+if(TARGET OpenAL::OpenAL)
+    target_link_libraries(psycross_static OpenAL::OpenAL)
+elseif(TARGET OpenAL)
+    target_link_libraries(psycross_static OpenAL)
+else()
+    target_link_libraries(psycross_static ${OPENAL_LIBRARY})
+    target_include_directories(psycross_static PRIVATE ${OPENAL_INCLUDE_DIR})
+endif()
 target_include_directories(psycross_static PRIVATE ${OpenAL_BINARY_DIR} ${OpenAL_SOURCE_DIR}/include)
