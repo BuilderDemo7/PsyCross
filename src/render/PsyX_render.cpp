@@ -187,6 +187,14 @@ int g_cfg_msaaSamples = 0;
  * texture, so it sees everything (world, UI, console) and is MSAA-safe. */
 int g_cfg_postProcess = 0;
 #define POST_PROCESS_MODE_COUNT 8
+/* PC port: tone-map operator applied as the final step of the post-process
+ * shader. 0=off, 1=Reinhard, 2=ACES, 3=Filmic. F3 cycles it in-game. Defined
+ * outside the PSYX_HAS_POSTPROCESS guard so non-GL builds still link. */
+int g_cfg_tonemap = 0;
+
+/* PC port: per-pixel (fragment-shader) flashlight cone instead of the PSX
+ * per-vertex lighting. 0=off (per-vertex), 1=on. F4 toggles it in-game. */
+int g_PsyX_UsePerPixelFlashlight = 0;
 
 /* Defined later in the file (post-process module); called from GR_InitialisePSX
  * and PsyX_EndScene. */
@@ -2111,6 +2119,7 @@ static ShaderID g_postShader = (ShaderID)-1;
 static GLint    g_postLoc_mode = -1;
 static GLint    g_postLoc_texSize = -1;
 static GLint    g_postLoc_time = -1;
+static GLint    g_postLoc_tonemap = -1;
 static GLuint   g_postVAO = 0;
 static GLuint   g_postFBO = 0;
 static TextureID g_postTex = (TextureID)-1;
@@ -2131,6 +2140,7 @@ static const char* s_postShaderSrc =
 	"uniform int   u_postMode;\n"
 	"uniform vec2  u_texSize;\n"  /* (1/width, 1/height) of the source */
 	"uniform float u_time;\n"
+	"uniform int   u_tonemap;\n"
 	"float hash(vec2 p) {\n"
 	"	p = fract(p * vec2(123.34, 456.21));\n"
 	"	p += dot(p, p + 45.32);\n"
@@ -2148,6 +2158,18 @@ static const char* s_postShaderSrc =
 	"	vec2 o = abs(uv.yx) / vec2(6.0, 5.0);\n"
 	"	uv += uv * o * o;\n"
 	"	return uv * 0.5 + 0.5;\n"
+	"}\n"
+	"vec3 tonemap(vec3 c) {\n"
+	"	if (u_tonemap == 1) { return c / (c + vec3(1.0)); }\n"                          /* Reinhard */
+	"	if (u_tonemap == 2) {\n"                                                          /* ACES (Narkowicz) */
+	"		c *= 0.6;\n"
+	"		return clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14), 0.0, 1.0);\n"
+	"	}\n"
+	"	if (u_tonemap == 3) {\n"                                                          /* Filmic (Hejl/Burgess) */
+	"		vec3 x = max(vec3(0.0), c - 0.004);\n"
+	"		return (x*(6.2*x+0.5))/(x*(6.2*x+1.7)+0.06);\n"
+	"	}\n"
+	"	return c;\n"
 	"}\n"
 	"void main() {\n"
 	"	vec2 uv = v_uv;\n"
@@ -2196,6 +2218,7 @@ static const char* s_postShaderSrc =
 	"	} else {\n"                                          /* passthrough */
 	"		col = texture2D(s_texture, uv).rgb;\n"
 	"	}\n"
+	"	col = tonemap(col);\n"
 	"	fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
 	"}\n"
 	"#endif\n";
@@ -2209,6 +2232,7 @@ void GR_InitPostProcess(void)
 	g_postLoc_mode    = glGetUniformLocation(g_postShader, "u_postMode");
 	g_postLoc_texSize = glGetUniformLocation(g_postShader, "u_texSize");
 	g_postLoc_time    = glGetUniformLocation(g_postShader, "u_time");
+	g_postLoc_tonemap = glGetUniformLocation(g_postShader, "u_tonemap");
 
 	glGenVertexArrays(1, &g_postVAO);
 }
@@ -2263,6 +2287,8 @@ static void GR_DrawFullscreenTexture(TextureID tex, int mode)
 		            g_windowHeight > 0 ? 1.0f / (float)g_windowHeight : 0.0f);
 	if (g_postLoc_time != -1)
 		glUniform1f(g_postLoc_time, (float)(g_postFrame & 1023));
+	if (g_postLoc_tonemap != -1)
+		glUniform1i(g_postLoc_tonemap, g_cfg_tonemap);
 
 	glBindTexture(GL_TEXTURE_2D, tex);
 	glBindVertexArray(g_postVAO);
@@ -2286,7 +2312,7 @@ static void GR_DrawFullscreenTexture(TextureID tex, int mode)
  * full-screen through the selected look. No-op when g_cfg_postProcess <= 0. */
 void GR_PostProcess(void)
 {
-	if (g_cfg_postProcess <= 0)
+	if (g_cfg_postProcess <= 0 && g_cfg_tonemap <= 0)
 		return;
 	if (g_postShader == (ShaderID)-1)
 		GR_InitPostProcess();

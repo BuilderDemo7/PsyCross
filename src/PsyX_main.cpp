@@ -1054,10 +1054,9 @@ void PsyX_Sys_DoDebugKeys(int nKey, char down)
 			PsyX_TakeScreenshot();
 			break;
 #endif
-		case SDL_SCANCODE_F3:
-			g_cfg_bilinearFiltering ^= 1;
-			eprintwarn("filtering mode: %d\n", g_cfg_bilinearFiltering);
-			break;
+		/* F3 freed for the game-side tone-map cycle (dbg_overlay.c). The old
+		 * bilinear-filtering toggle here was redundant — filtering is set via the
+		 * launcher (psx_dither/Filtering option -> main_pc.c). */
 		/* F4 keyboard-controller-slot cycle removed — a stray tap moved keyboard +
 		 * mouse input off player 1, silently killing fire/aim (read as a gameplay
 		 * bug). g_activeKeyboardControllers stays at its 0x1 default. */

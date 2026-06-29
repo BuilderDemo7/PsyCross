@@ -78,6 +78,14 @@ extern int							g_cfg_msaaSamples;
  * Safe to change at runtime (launcher config + F2 in-game cycle). */
 extern int							g_cfg_postProcess;
 
+/* PC port: tone-map operator on the final image (0=off,1=Reinhard,2=ACES,
+ * 3=Filmic). Runtime-settable (launcher config + F3 in-game cycle). */
+extern int							g_cfg_tonemap;
+
+/* PC port: per-pixel (fragment-shader) flashlight cone. Runtime-settable
+ * (launcher config + F4 in-game toggle). */
+extern int							g_PsyX_UsePerPixelFlashlight;
+
 /* PC port (Silent Hill): runtime master gate for PGXP perspective correction.
  * Set this from game code AFTER PsyX_Initialise. When the binary is built with
  * USE_PGXP=1 but this is 0, the prim emitters write a_zw=0 so the shader takes
