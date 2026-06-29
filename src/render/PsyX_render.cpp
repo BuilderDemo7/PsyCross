@@ -202,7 +202,7 @@ int g_PsyX_UsePerPixelFlashlight = 0;
 int   g_PsyX_FlashlightActive   = 0;
 float g_PsyX_FlashlightPos[3]   = { 0.0f, 0.0f, 0.0f };
 float g_PsyX_FlashlightDir[3]   = { 0.0f, 0.0f, 1.0f };
-float g_PsyX_FlashlightColor[3] = { 0.85f, 0.80f, 0.72f };  /* warm white, slightly under 1.0 so the screen-blend hotspot reads bright without clipping to pure white */
+float g_PsyX_FlashlightColor[3] = { 1.0f, 0.95f, 0.85f };  /* warm white; per-fragment N.L + screen-blend keep facing/near surfaces a bright hotspot while angled/far surfaces fall off naturally */
 float g_PsyX_FlashlightInnerCos = 0.94f;  /* ~20 deg */
 float g_PsyX_FlashlightOuterCos = 0.82f;  /* ~35 deg */
 float g_PsyX_FlashlightRange    = 4000.0f;
@@ -983,15 +983,23 @@ int g_PsxFogToBlack = 0;
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
 	"		fragColor *= v_color;\n"\
-	/* Per-pixel flashlight cone, screen-blended (+= add*(1-base)) so it brightens dark surfaces fully yet rolls off on already-bright ones instead of clipping to white. Gated on the uniform AND vsz>0 so untracked verts / 2D prims stay unlit. N.L omitted in v1. */\
-	"		if (u_flashlightOn > 0 && v_viewpos.z > 0.0) {\n"\
-	"			vec3 P = v_viewpos;\n"\
-	"			vec3 L = u_flLightPos - P;\n"\
-	"			float d = length(L);\n"\
-	"			L /= max(d, 0.0001);\n"\
-	"			float cone  = smoothstep(u_flOuterCos, u_flInnerCos, dot(-L, u_flDir));\n"\
-	"			float atten = clamp(1.0 - d / u_flRange, 0.0, 1.0);\n"\
-	"			fragColor.rgb += (u_flColor * (cone * atten)) * max(vec3(0.0), 1.0 - fragColor.rgb);\n"\
+	/* Per-pixel flashlight: spotlight cone * per-fragment Lambert (N.L). GrVertex carries no usable normals, so the surface normal is reconstructed from the view-space position gradient (cross(dFdx,dFdy)) -- v_viewpos is the same proven view-space pos the cone already uses, so this needs no GTE-side normal capture and is exact per triangle face. Derivatives are taken inside the UNIFORM u_flashlightOn branch (never the per-fragment z test) so they stay well-defined. Screen-blended so bright surfaces do not clip to white. */\
+	"		if (u_flashlightOn > 0) {\n"\
+	"			vec3 flP = v_viewpos;\n"\
+	"			vec3 flN = cross(dFdx(flP), dFdy(flP));\n"\
+	"			if (flP.z > 0.0) {\n"\
+	"				vec3 L = u_flLightPos - flP;\n"\
+	"				float d = length(L);\n"\
+	"				L /= max(d, 0.0001);\n"\
+	"				float nlen = length(flN);\n"\
+	"				vec3 N = (nlen > 1e-9) ? flN / nlen : vec3(0.0, 0.0, -1.0);\n"\
+	"				if (dot(N, flP) > 0.0) N = -N;\n"\
+	"				float ndl = 0.15 + 0.85 * max(dot(N, L), 0.0);\n"\
+	"				float cone  = smoothstep(u_flOuterCos, u_flInnerCos, dot(-L, u_flDir));\n"\
+	"				float atten = clamp(1.0 - d / u_flRange, 0.0, 1.0);\n"\
+	"				vec3 fl = u_flColor * (cone * atten * ndl);\n"\
+	"				fragColor.rgb += fl * max(vec3(0.0), 1.0 - fragColor.rgb);\n"\
+	"			}\n"\
 	"		}\n"\
 	"		float fogAmt = clamp(v_fogAmount * u_fogStrength, 0.0, 1.0);\n"\
 	"		if (u_fogToBlack > 0)\n"\
