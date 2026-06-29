@@ -988,6 +988,7 @@ int g_PsxFogToBlack = 0;
 	"			vec3 flP = v_viewpos;\n"\
 	"			vec3 flN = cross(dFdx(flP), dFdy(flP));\n"\
 	"			if (flP.z > 0.0) {\n"\
+	"				fragColor.rgb *= 0.15; // per-vertex lighting -> dark base so the per-pixel cone is the only flashlight\n"\
 	"				vec3 L = u_flLightPos - flP;\n"\
 	"				float d = length(L);\n"\
 	"				L /= max(d, 0.0001);\n"\
