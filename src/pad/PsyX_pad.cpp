@@ -300,6 +300,25 @@ int GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis)
 	return SDL_GameControllerGetButton(cont, (SDL_GameControllerButton)buttonOrAxis) * 32767;
 }
 
+/* PC port: is an SDL game-controller button held on ANY attached physical
+ * controller? Read straight from SDL, NOT the keyboard-merged PSX pad word, so a
+ * keyboard key mapped to the same PSX button cannot trigger a controller-only
+ * action (e.g. the Change-Camera pad bind). sdlGameControllerButton < 0 = unbound. */
+extern "C" int PsyX_RawControllerButtonHeld(int sdlGameControllerButton)
+{
+	int i;
+	if (sdlGameControllerButton < 0)
+		return 0;
+	for (i = 0; i < MAX_CONTROLLERS; i++)
+	{
+		SDL_GameController* gc = g_controllers[i].gc;
+		if (gc && SDL_GameControllerGetAttached(gc) &&
+		    SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)sdlGameControllerButton))
+			return 1;
+	}
+	return 0;
+}
+
 /* PC port: Schmitt-trigger digitization. An analog input (trigger/stick) mapped to a
    button presses only above HIGH and releases only below LOW, so a value wavering near a
    single 50% threshold can't chatter the digital bit -- that chatter double-fired the gun
