@@ -86,6 +86,20 @@ extern int							g_cfg_tonemap;
  * (launcher config + F4 in-game toggle). */
 extern int							g_PsyX_UsePerPixelFlashlight;
 
+/* PC port: per-pixel flashlight cone parameters, pushed once per frame by game
+ * code (bodyprog world-lighting setup). Position and direction are in VIEW
+ * (camera) space — the same space as the per-vertex GrVertex.vsx/vsy/vsz the GTE
+ * captures. The shader only consumes these when (g_PsyX_UsePerPixelFlashlight &&
+ * g_PsyX_FlashlightActive). g_PsyX_FlashlightActive defaults 0 so nothing is lit
+ * until the game pushes a valid light for the frame. */
+extern int							g_PsyX_FlashlightActive;     /* 1 = push light this frame */
+extern float						g_PsyX_FlashlightPos[3];     /* view-space xyz */
+extern float						g_PsyX_FlashlightDir[3];     /* view-space unit dir the cone points along */
+extern float						g_PsyX_FlashlightColor[3];   /* additive RGB at full strength */
+extern float						g_PsyX_FlashlightInnerCos;   /* cos(inner half-angle) */
+extern float						g_PsyX_FlashlightOuterCos;   /* cos(outer half-angle) */
+extern float						g_PsyX_FlashlightRange;      /* distance falloff, view-space units */
+
 /* PC port (Silent Hill): runtime master gate for PGXP perspective correction.
  * Set this from game code AFTER PsyX_Initialise. When the binary is built with
  * USE_PGXP=1 but this is 0, the prim emitters write a_zw=0 so the shader takes

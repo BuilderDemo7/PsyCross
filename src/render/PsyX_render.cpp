@@ -196,6 +196,17 @@ int g_cfg_tonemap = 0;
  * per-vertex lighting. 0=off (per-vertex), 1=on. F4 toggles it in-game. */
 int g_PsyX_UsePerPixelFlashlight = 0;
 
+/* PC port: per-frame flashlight cone parameters (view space), set by game code.
+ * The shader consumes them only when (g_PsyX_UsePerPixelFlashlight &&
+ * g_PsyX_FlashlightActive). Defaults make the cone inert (active=0). */
+int   g_PsyX_FlashlightActive   = 0;
+float g_PsyX_FlashlightPos[3]   = { 0.0f, 0.0f, 0.0f };
+float g_PsyX_FlashlightDir[3]   = { 0.0f, 0.0f, 1.0f };
+float g_PsyX_FlashlightColor[3] = { 1.0f, 0.95f, 0.85f };
+float g_PsyX_FlashlightInnerCos = 0.94f;  /* ~20 deg */
+float g_PsyX_FlashlightOuterCos = 0.82f;  /* ~35 deg */
+float g_PsyX_FlashlightRange    = 4000.0f;
+
 /* Defined later in the file (post-process module); called from GR_InitialisePSX
  * and PsyX_EndScene. */
 void GR_InitPostProcess(void);
@@ -662,6 +673,13 @@ typedef struct
 	GLint fogStrengthLoc;
 	GLint pgxpEnabledLoc;
 	GLint szMaxLoc;
+	GLint flashlightOnLoc;
+	GLint flLightPosLoc;
+	GLint flDirLoc;
+	GLint flColorLoc;
+	GLint flInnerCosLoc;
+	GLint flOuterCosLoc;
+	GLint flRangeLoc;
 #endif
 } GTEShader;
 
@@ -683,6 +701,13 @@ GLint u_fogToBlackLoc;
 GLint u_fogStrengthLoc;
 GLint u_pgxpEnabledLoc;
 GLint u_szMaxLoc;
+GLint u_flashlightOnLoc;
+GLint u_flLightPosLoc;
+GLint u_flDirLoc;
+GLint u_flColorLoc;
+GLint u_flInnerCosLoc;
+GLint u_flOuterCosLoc;
+GLint u_flRangeLoc;
 
 float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 /* World fog density multiplier. 1.0 = native PC shader fog; >1 deepens it toward the
@@ -898,6 +923,7 @@ int g_PsxFogToBlack = 0;
 	"	attribute vec4 a_extra; // texcoord.xy ofs, unused.xy\n"\
 	"	attribute vec4 a_zw;\n"\
 	"	attribute vec3 a_pgxp;\n"\
+	"	attribute vec3 a_viewpos;\n"\
 	"	uniform mat4 Projection;\n"\
 	"	uniform mat4 Projection3D;\n"\
 	"	uniform int u_pgxpEnabled;\n"\
@@ -926,6 +952,7 @@ int g_PsxFogToBlack = 0;
 	 * "always treat as 3D" behavior — matches legacy behavior. */	"		v_is3d = (u_pgxpEnabled > 0) ? ((a_pgxp.z > 0.0) ? 1.0 : 0.0) : 1.0;\n"\
 	"		v_z = (gl_Position.z - 40.0) * 0.005;\n"\
 	"		v_fogAmount = clamp(a_extra.z / 127.0, 0.0, 1.0);\n"\
+	"		v_viewpos = a_viewpos;\n"\
 	"	}\n"
 
 #define GPU_FRAGMENT_SAMPLE_SHADER(bit) \
@@ -943,12 +970,29 @@ int g_PsxFogToBlack = 0;
 	"	uniform vec3 u_fogColor;\n"\
 	"	uniform int u_fogToBlack;\n"\
 	"	uniform float u_fogStrength;\n"\
+	"	uniform int u_flashlightOn;\n"\
+	"	uniform vec3 u_flLightPos;\n"\
+	"	uniform vec3 u_flDir;\n"\
+	"	uniform vec3 u_flColor;\n"\
+	"	uniform float u_flInnerCos;\n"\
+	"	uniform float u_flOuterCos;\n"\
+	"	uniform float u_flRange;\n"\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0 && v_is3d > 0.5)\n"\
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
 	"		fragColor *= v_color;\n"\
+	/* Per-pixel flashlight cone (additive); gated on the uniform AND vsz>0 so untracked verts / 2D prims stay unlit. N.L omitted in v1. */\
+	"		if (u_flashlightOn > 0 && v_viewpos.z > 0.0) {\n"\
+	"			vec3 P = v_viewpos;\n"\
+	"			vec3 L = u_flLightPos - P;\n"\
+	"			float d = length(L);\n"\
+	"			L /= max(d, 0.0001);\n"\
+	"			float cone  = smoothstep(u_flOuterCos, u_flInnerCos, dot(-L, u_flDir));\n"\
+	"			float atten = clamp(1.0 - d / u_flRange, 0.0, 1.0);\n"\
+	"			fragColor.rgb += u_flColor * (cone * atten);\n"\
+	"		}\n"\
 	"		float fogAmt = clamp(v_fogAmount * u_fogStrength, 0.0, 1.0);\n"\
 	"		if (u_fogToBlack > 0)\n"\
 	"			fragColor.rgb *= (1.0 - fogAmt);\n"\
@@ -964,6 +1008,7 @@ const char* gte_shader_4 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -977,6 +1022,7 @@ const char* gte_shader_8 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -990,6 +1036,7 @@ const char* gte_shader_16 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -1003,6 +1050,7 @@ const char* gte_shader_32_rgba =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -1167,6 +1215,7 @@ ShaderID GR_Shader_Compile(const char* source)
 	glBindAttribLocation(program, a_color, "a_color");
 	glBindAttribLocation(program, a_extra, "a_extra");
 	glBindAttribLocation(program, a_normal, "a_normal");
+	glBindAttribLocation(program, a_viewpos, "a_viewpos");
 
 	glLinkProgram(program);
 	if(GR_Shader_CheckProgramStatus(program) == 0)
@@ -1238,6 +1287,13 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->fogStrengthLoc = glGetUniformLocation(sh->shader, "u_fogStrength");
 	sh->pgxpEnabledLoc = glGetUniformLocation(sh->shader, "u_pgxpEnabled");
 	sh->szMaxLoc = glGetUniformLocation(sh->shader, "u_szMax");
+	sh->flashlightOnLoc = glGetUniformLocation(sh->shader, "u_flashlightOn");
+	sh->flLightPosLoc = glGetUniformLocation(sh->shader, "u_flLightPos");
+	sh->flDirLoc = glGetUniformLocation(sh->shader, "u_flDir");
+	sh->flColorLoc = glGetUniformLocation(sh->shader, "u_flColor");
+	sh->flInnerCosLoc = glGetUniformLocation(sh->shader, "u_flInnerCos");
+	sh->flOuterCosLoc = glGetUniformLocation(sh->shader, "u_flOuterCos");
+	sh->flRangeLoc = glGetUniformLocation(sh->shader, "u_flRange");
 #endif
 }
 
@@ -1540,6 +1596,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_4.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_4.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_4.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_4.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_4.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_4.flDirLoc;
+		u_flColorLoc = g_gte_shader_4.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_4.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_4.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_4.flRangeLoc;
 		break;
 	case TF_8_BIT:
 		GR_SetShader(g_gte_shader_8.shader);
@@ -1554,6 +1617,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_8.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_8.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_8.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_8.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_8.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_8.flDirLoc;
+		u_flColorLoc = g_gte_shader_8.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_8.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_8.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_8.flRangeLoc;
 		break;
 	case TF_16_BIT:
 		GR_SetShader(g_gte_shader_16.shader);
@@ -1568,6 +1638,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_16.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_16.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_16.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_16.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_16.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_16.flDirLoc;
+		u_flColorLoc = g_gte_shader_16.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_16.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_16.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_16.flRangeLoc;
 		break;
 	case TF_32_BIT_RGBA:
 		GR_SetShader(g_gte_shader_32_rgba.shader);
@@ -1582,6 +1659,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_32_rgba.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_32_rgba.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_32_rgba.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_32_rgba.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_32_rgba.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_32_rgba.flDirLoc;
+		u_flColorLoc = g_gte_shader_32_rgba.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_32_rgba.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_32_rgba.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_32_rgba.flRangeLoc;
 		break;
 	}
 
@@ -1607,6 +1691,25 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 
 	if (u_fogStrengthLoc != -1)
 		glUniform1f(u_fogStrengthLoc, g_PsyX_FogStrength);
+
+	/* Per-pixel flashlight cone. u_flashlightOn is 0 unless BOTH the master
+	 * config flag and the per-frame game push are set, so the OFF path never
+	 * touches the spotlight branch (and the vsz>0 gate also keeps it off). */
+	if (u_flashlightOnLoc != -1)
+		glUniform1i(u_flashlightOnLoc,
+		            (g_PsyX_UsePerPixelFlashlight && g_PsyX_FlashlightActive) ? 1 : 0);
+	if (u_flLightPosLoc != -1)
+		glUniform3fv(u_flLightPosLoc, 1, g_PsyX_FlashlightPos);
+	if (u_flDirLoc != -1)
+		glUniform3fv(u_flDirLoc, 1, g_PsyX_FlashlightDir);
+	if (u_flColorLoc != -1)
+		glUniform3fv(u_flColorLoc, 1, g_PsyX_FlashlightColor);
+	if (u_flInnerCosLoc != -1)
+		glUniform1f(u_flInnerCosLoc, g_PsyX_FlashlightInnerCos);
+	if (u_flOuterCosLoc != -1)
+		glUniform1f(u_flOuterCosLoc, g_PsyX_FlashlightOuterCos);
+	if (u_flRangeLoc != -1)
+		glUniform1f(u_flRangeLoc, g_PsyX_FlashlightRange);
 
 	/* Push the dither-force uniform every shader bind. Cheap (single
 	 * float upload) and ensures runtime config changes (if we add a
@@ -2823,6 +2926,8 @@ void GR_BindVertexBuffer()
 	glVertexAttribPointer(a_extra, 4, GL_BYTE, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->tcx);
 	glVertexAttribPointer(a_normal, 3, GL_FLOAT, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->nx);
 	glEnableVertexAttribArray(a_normal);
+	glVertexAttribPointer(a_viewpos, 3, GL_FLOAT, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->vsx);
+	glEnableVertexAttribArray(a_viewpos);
 
 	g_curVertexBuffer++;
 	g_curVertexBuffer &= 1;
