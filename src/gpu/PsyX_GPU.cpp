@@ -442,6 +442,17 @@ extern "C" void PsyX_SetNextPrimSz(unsigned short s0, unsigned short s1, unsigne
 	g_primSzNextValid = 1;
 }
 
+extern "C" void PsyX_SetNextPrimSzExact(unsigned short s0, unsigned short s1, unsigned short s2, unsigned short s3)
+{
+	uint32_t mx = s0 > s1 ? s0 : s1;
+	if (s2 > mx) mx = s2;
+	if (s3 > mx) mx = s3;
+	if (mx > g_szMaxThisFrame) g_szMaxThisFrame = mx;
+	g_primSzNext[0] = s0; g_primSzNext[1] = s1;
+	g_primSzNext[2] = s2; g_primSzNext[3] = s3;
+	g_primSzNextValid = 1;
+}
+
 extern "C" void PsyX_CaptureGteDepths(void* prim)
 {
 	/* PGXP: if the next prim was flagged screen-space (billboards), record it so
