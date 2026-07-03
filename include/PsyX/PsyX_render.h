@@ -242,6 +242,15 @@ extern void			GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned
 extern void			GR_UpdateVertexBuffer(const GrVertex* vertices, int count);
 extern void			GR_DrawTriangles(int start_vertex, int triangles);
 
+/* Flashlight shadow map depth pre-pass (see g_PsyX_UseFlashlightShadows). Call
+ * GR_ShadowPassBegin() once after GR_UpdateVertexBuffer while the frame VAO is
+ * still bound, replay opaque split ranges via GR_ShadowPassDraw(), then
+ * GR_ShadowPassEnd(). Guarded by GR_FlashlightShadowActive(). */
+extern int			GR_FlashlightShadowActive(void);
+extern void			GR_ShadowPassBegin(void);
+extern void			GR_ShadowPassDraw(int start_vertex, int num_verts);
+extern void			GR_ShadowPassEnd(void);
+
 extern void			GR_PushDebugLabel(const char* label);
 extern void			GR_PopDebugLabel();
 

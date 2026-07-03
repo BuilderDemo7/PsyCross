@@ -196,6 +196,15 @@ int g_cfg_tonemap = 0;
  * per-vertex lighting. 0=off (per-vertex), 1=on. F4 toggles it in-game. */
 int g_PsyX_UsePerPixelFlashlight = 0;
 
+/* PC port: real flashlight shadow mapping. When on (and the per-pixel flashlight
+ * is on + active), the frame's opaque geometry is rendered depth-only from the
+ * flashlight's point of view into g_shadowDepthTex, and the cone fragment shader
+ * samples it so monsters/props cast dynamic shadows inside the beam. 0 = off
+ * (rendered output byte-identical to per-pixel flashlight without shadows). */
+int   g_PsyX_UseFlashlightShadows = 0;
+/* Depth-compare bias in light-clip [0,1] space; tunable via `shadowbias` console. */
+float g_PsyX_FlashlightShadowBias = 0.0018f;
+
 /* PC port: per-frame flashlight cone parameters (view space), set by game code.
  * The shader consumes them only when (g_PsyX_UsePerPixelFlashlight &&
  * g_PsyX_FlashlightActive). Defaults make the cone inert (active=0). */
@@ -698,6 +707,10 @@ typedef struct
 	GLint flInnerCosLoc;
 	GLint flOuterCosLoc;
 	GLint flRangeLoc;
+	GLint shadowOnLoc;
+	GLint shadowMatrixLoc;
+	GLint shadowBiasLoc;
+	GLint shadowTexelLoc;
 #endif
 } GTEShader;
 
@@ -726,6 +739,20 @@ GLint u_flColorLoc;
 GLint u_flInnerCosLoc;
 GLint u_flOuterCosLoc;
 GLint u_flRangeLoc;
+GLint u_shadowOnLoc;
+GLint u_shadowMatrixLoc;
+GLint u_shadowBiasLoc;
+GLint u_shadowTexelLoc;
+
+/* Flashlight shadow map (see g_PsyX_UseFlashlightShadows). Depth-only FBO rendered
+ * from the light POV each frame; g_shadowLightMatrix maps view space -> light clip.
+ * Column-major, identity until the first shadow pass computes it. */
+#define PSYX_SHADOW_MAP_SIZE 1024
+static GLuint g_shadowFBO = 0;
+static GLuint g_shadowDepthTex = 0;
+static ShaderID g_shadowDepthShader = (ShaderID)-1;
+static GLint g_shadowDepthMatrixLoc = -1;
+static float g_shadowLightMatrix[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 
 float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 /* World fog density multiplier. 1.0 = native PC shader fog; >1 deepens it toward the
@@ -995,6 +1022,11 @@ int g_PsxFogToBlack = 0;
 	"	uniform float u_flInnerCos;\n"\
 	"	uniform float u_flOuterCos;\n"\
 	"	uniform float u_flRange;\n"\
+	"	uniform int u_shadowOn;\n"\
+	"	uniform sampler2D u_shadowTex;\n"\
+	"	uniform mat4 u_shadowMatrix;\n"\
+	"	uniform float u_shadowBias;\n"\
+	"	uniform vec2 u_shadowTexel;\n"\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0 && v_is3d > 0.5)\n"\
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
@@ -1017,7 +1049,26 @@ int g_PsxFogToBlack = 0;
 	"				float ndl = 0.15 + 0.85 * max(dot(N, L), 0.0);\n"\
 	"				float cone  = smoothstep(u_flOuterCos, u_flInnerCos, dot(-L, normalize(u_flDir)));\n"\
 	"				float atten = clamp(1.0 - d / u_flRange, 0.0, 1.0);\n"\
-	"				vec3 fl = u_flColor * (cone * atten * ndl);\n"\
+	/* Real shadow map: project the view-space fragment into the light's clip space and compare its depth against the nearest occluder the light saw; 3x3 PCF softens the hard 1024^2 edge, and a slope-scaled bias (from N.L) fights acne. Gated on u_shadowOn so the no-shadow path is untouched. */\
+	"				float shadow = 1.0;\n"\
+	"				if (u_shadowOn > 0) {\n"\
+	"					vec4 lp = u_shadowMatrix * vec4(flP, 1.0);\n"\
+	"					if (lp.w > 0.0) {\n"\
+	"						vec3 luv = lp.xyz / lp.w * 0.5 + 0.5;\n"\
+	"						if (luv.x > 0.0 && luv.x < 1.0 && luv.y > 0.0 && luv.y < 1.0 && luv.z < 1.0) {\n"\
+	"							float sbias = u_shadowBias * (1.0 + 3.0 * (1.0 - max(dot(N, L), 0.0)));\n"\
+	"							float occ = 0.0;\n"\
+	"							for (int sy = -1; sy <= 1; sy++) {\n"\
+	"								for (int sx = -1; sx <= 1; sx++) {\n"\
+	"									float sd = texture2D(u_shadowTex, luv.xy + vec2(float(sx), float(sy)) * u_shadowTexel).r;\n"\
+	"									occ += (luv.z - sbias > sd) ? 1.0 : 0.0;\n"\
+	"								}\n"\
+	"							}\n"\
+	"							shadow = 1.0 - occ / 9.0;\n"\
+	"						}\n"\
+	"					}\n"\
+	"				}\n"\
+	"				vec3 fl = u_flColor * (cone * atten * ndl * shadow);\n"\
 	"				fragColor.rgb += flAlbedo * fl;\n"\
 	"			}\n"\
 	"		}\n"\
@@ -1322,6 +1373,24 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->flInnerCosLoc = glGetUniformLocation(sh->shader, "u_flInnerCos");
 	sh->flOuterCosLoc = glGetUniformLocation(sh->shader, "u_flOuterCos");
 	sh->flRangeLoc = glGetUniformLocation(sh->shader, "u_flRange");
+	sh->shadowOnLoc = glGetUniformLocation(sh->shader, "u_shadowOn");
+	sh->shadowMatrixLoc = glGetUniformLocation(sh->shader, "u_shadowMatrix");
+	sh->shadowBiasLoc = glGetUniformLocation(sh->shader, "u_shadowBias");
+	sh->shadowTexelLoc = glGetUniformLocation(sh->shader, "u_shadowTexel");
+
+	/* Shadow map lives on texture unit 1 (scene textures use unit 0). Bind the
+	 * sampler once here; the depth texture is bound to GL_TEXTURE1 each frame. */
+	{
+		GLint prevProg = 0;
+		glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+		GLint sloc = glGetUniformLocation(sh->shader, "u_shadowTex");
+		if (sloc != -1)
+		{
+			glUseProgram(sh->shader);
+			glUniform1i(sloc, 1);
+			glUseProgram(prevProg);
+		}
+	}
 #endif
 }
 
@@ -1631,6 +1700,10 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_flInnerCosLoc = g_gte_shader_4.flInnerCosLoc;
 		u_flOuterCosLoc = g_gte_shader_4.flOuterCosLoc;
 		u_flRangeLoc = g_gte_shader_4.flRangeLoc;
+		u_shadowOnLoc = g_gte_shader_4.shadowOnLoc;
+		u_shadowMatrixLoc = g_gte_shader_4.shadowMatrixLoc;
+		u_shadowBiasLoc = g_gte_shader_4.shadowBiasLoc;
+		u_shadowTexelLoc = g_gte_shader_4.shadowTexelLoc;
 		break;
 	case TF_8_BIT:
 		GR_SetShader(g_gte_shader_8.shader);
@@ -1652,6 +1725,10 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_flInnerCosLoc = g_gte_shader_8.flInnerCosLoc;
 		u_flOuterCosLoc = g_gte_shader_8.flOuterCosLoc;
 		u_flRangeLoc = g_gte_shader_8.flRangeLoc;
+		u_shadowOnLoc = g_gte_shader_8.shadowOnLoc;
+		u_shadowMatrixLoc = g_gte_shader_8.shadowMatrixLoc;
+		u_shadowBiasLoc = g_gte_shader_8.shadowBiasLoc;
+		u_shadowTexelLoc = g_gte_shader_8.shadowTexelLoc;
 		break;
 	case TF_16_BIT:
 		GR_SetShader(g_gte_shader_16.shader);
@@ -1673,6 +1750,10 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_flInnerCosLoc = g_gte_shader_16.flInnerCosLoc;
 		u_flOuterCosLoc = g_gte_shader_16.flOuterCosLoc;
 		u_flRangeLoc = g_gte_shader_16.flRangeLoc;
+		u_shadowOnLoc = g_gte_shader_16.shadowOnLoc;
+		u_shadowMatrixLoc = g_gte_shader_16.shadowMatrixLoc;
+		u_shadowBiasLoc = g_gte_shader_16.shadowBiasLoc;
+		u_shadowTexelLoc = g_gte_shader_16.shadowTexelLoc;
 		break;
 	case TF_32_BIT_RGBA:
 		GR_SetShader(g_gte_shader_32_rgba.shader);
@@ -1694,6 +1775,10 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_flInnerCosLoc = g_gte_shader_32_rgba.flInnerCosLoc;
 		u_flOuterCosLoc = g_gte_shader_32_rgba.flOuterCosLoc;
 		u_flRangeLoc = g_gte_shader_32_rgba.flRangeLoc;
+		u_shadowOnLoc = -1;
+		u_shadowMatrixLoc = -1;
+		u_shadowBiasLoc = -1;
+		u_shadowTexelLoc = -1;
 		break;
 	}
 
@@ -1756,6 +1841,27 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 	}
 	if (u_flRangeLoc != -1)
 		glUniform1f(u_flRangeLoc, g_PsyX_FlashlightRange);
+
+	/* Flashlight shadow map: same gate as the depth pre-pass in DrawAllSplits, so the
+	 * shader only samples the shadow texture on frames one was actually rendered. */
+	{
+		int shadowOn = (g_PsyX_UseFlashlightShadows && g_PsyX_UsePerPixelFlashlight &&
+		                g_PsyX_FlashlightActive && g_shadowDepthTex != 0) ? 1 : 0;
+		if (u_shadowOnLoc != -1)
+			glUniform1i(u_shadowOnLoc, shadowOn);
+		if (shadowOn)
+		{
+			if (u_shadowMatrixLoc != -1)
+				glUniformMatrix4fv(u_shadowMatrixLoc, 1, GL_FALSE, g_shadowLightMatrix);
+			if (u_shadowBiasLoc != -1)
+				glUniform1f(u_shadowBiasLoc, g_PsyX_FlashlightShadowBias);
+			if (u_shadowTexelLoc != -1)
+				glUniform2f(u_shadowTexelLoc, 1.0f / (float)PSYX_SHADOW_MAP_SIZE, 1.0f / (float)PSYX_SHADOW_MAP_SIZE);
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, g_shadowDepthTex);
+			glActiveTexture(GL_TEXTURE0);
+		}
+	}
 
 	/* Push the dither-force uniform every shader bind. Cheap (single
 	 * float upload) and ensures runtime config changes (if we add a
@@ -2495,6 +2601,213 @@ void GR_PostProcess(void)
 #else  /* !PSYX_HAS_POSTPROCESS */
 void GR_InitPostProcess(void) {}
 void GR_PostProcess(void) {}
+#endif
+
+/* ------------------------------------------------------------------------
+ * Flashlight shadow mapping (see g_PsyX_UseFlashlightShadows).
+ *
+ * Everything is done in the engine's CAMERA VIEW space: GrVertex carries
+ * a_viewpos (view space) and the flashlight pos/dir are already pushed in
+ * view space, so the light matrix is built purely from those with no
+ * world-space / camera-inverse step. Each frame the opaque geometry is
+ * rendered depth-only from the light POV into g_shadowDepthTex; the cone
+ * fragment shader samples it. Feature is a no-op (byte-identical output)
+ * when the master flag is off.
+ * ---------------------------------------------------------------------- */
+#if USE_OPENGL
+
+static const char* s_shadowDepthShaderSrc =
+	"#ifdef VERTEX\n"
+	"attribute vec3 a_viewpos;\n"
+	"uniform mat4 u_shadowMatrix;\n"
+	"void main() {\n"
+	/* Untracked (2D/UI) verts have vsz==0; push them outside clip so they
+	 * never write shadow depth. Matches the cone shader's flP.z>0 gate. */
+	"	if (a_viewpos.z <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }\n"
+	"	gl_Position = u_shadowMatrix * vec4(a_viewpos, 1.0);\n"
+	"}\n"
+	"#else\n"
+	"void main() { }\n"
+	"#endif\n";
+
+static void sh_normalize3(float* v)
+{
+	float l = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+	if (l > 1e-8f) { v[0] /= l; v[1] /= l; v[2] /= l; }
+}
+
+static float sh_dot3(const float* a, const float* b)
+{
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static void sh_cross(const float* a, const float* b, float* r)
+{
+	r[0] = a[1] * b[2] - a[2] * b[1];
+	r[1] = a[2] * b[0] - a[0] * b[2];
+	r[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+/* Column-major (GL) perspective + look-at + multiply. */
+static void sh_perspective(float fovy, float aspect, float zn, float zf, float* m)
+{
+	float f = 1.0f / tanf(fovy * 0.5f);
+	for (int i = 0; i < 16; i++) m[i] = 0.0f;
+	m[0]  = f / aspect;
+	m[5]  = f;
+	m[10] = (zf + zn) / (zn - zf);
+	m[11] = -1.0f;
+	m[14] = (2.0f * zf * zn) / (zn - zf);
+}
+
+static void sh_lookat(const float* eye, const float* center, const float* up, float* m)
+{
+	float f[3] = { center[0] - eye[0], center[1] - eye[1], center[2] - eye[2] };
+	sh_normalize3(f);
+	float s[3]; sh_cross(f, up, s); sh_normalize3(s);
+	float u[3]; sh_cross(s, f, u);
+	m[0] = s[0];  m[4] = s[1];  m[8]  = s[2];  m[12] = -sh_dot3(s, eye);
+	m[1] = u[0];  m[5] = u[1];  m[9]  = u[2];  m[13] = -sh_dot3(u, eye);
+	m[2] = -f[0]; m[6] = -f[1]; m[10] = -f[2]; m[14] = sh_dot3(f, eye);
+	m[3] = 0.0f;  m[7] = 0.0f;  m[11] = 0.0f;  m[15] = 1.0f;
+}
+
+static void sh_mul(const float* a, const float* b, float* r)  /* r = a * b */
+{
+	for (int c = 0; c < 4; c++)
+		for (int row = 0; row < 4; row++)
+			r[c * 4 + row] = a[0 * 4 + row] * b[c * 4 + 0] +
+			                 a[1 * 4 + row] * b[c * 4 + 1] +
+			                 a[2 * 4 + row] * b[c * 4 + 2] +
+			                 a[3 * 4 + row] * b[c * 4 + 3];
+}
+
+static void GR_EnsureShadowTarget(void)
+{
+	if (g_shadowFBO != 0)
+		return;
+
+	glGenTextures(1, &g_shadowDepthTex);
+	glBindTexture(GL_TEXTURE_2D, g_shadowDepthTex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, PSYX_SHADOW_MAP_SIZE, PSYX_SHADOW_MAP_SIZE,
+	             0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+	{
+		float border[4] = { 1.0f, 1.0f, 1.0f, 1.0f };  /* outside the light frustum = fully lit */
+		glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+	}
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	glGenFramebuffers(1, &g_shadowFBO);
+	glBindFramebuffer(GL_FRAMEBUFFER, g_shadowFBO);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, g_shadowDepthTex, 0);
+	glDrawBuffer(GL_NONE);
+	glReadBuffer(GL_NONE);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	if (g_shadowDepthShader == (ShaderID)-1)
+	{
+		g_shadowDepthShader = GR_Shader_Compile(s_shadowDepthShaderSrc);
+		g_shadowDepthMatrixLoc = glGetUniformLocation(g_shadowDepthShader, "u_shadowMatrix");
+	}
+}
+
+static void GR_BuildShadowMatrix(void)
+{
+	float sizeActive = g_PsyX_FlashlightFpsMode ? g_PsyX_FlashlightSizeFps : g_PsyX_FlashlightSize;
+	float flOuter = 1.0f - sizeActive * (1.0f - g_PsyX_FlashlightOuterCos);
+	if (flOuter < 0.05f)  flOuter = 0.05f;
+	if (flOuter > 0.999f) flOuter = 0.999f;
+
+	float fov = acosf(flOuter) * 2.0f * 1.25f;  /* widen past the cone so edge shadows aren't clipped */
+	if (fov > 2.9f) fov = 2.9f;
+	if (fov < 0.2f) fov = 0.2f;
+
+	float zn = 20.0f;
+	float zf = g_PsyX_FlashlightRange * 1.3f;
+	if (zf < zn + 1.0f) zf = zn + 1.0f;
+
+	float eye[3] = { g_PsyX_FlashlightPos[0], g_PsyX_FlashlightPos[1], g_PsyX_FlashlightPos[2] };
+	float dir[3] = { g_PsyX_FlashlightDir[0], g_PsyX_FlashlightDir[1], g_PsyX_FlashlightDir[2] };
+	sh_normalize3(dir);
+	float center[3] = { eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2] };
+
+	float up[3] = { 0.0f, 1.0f, 0.0f };
+	if (fabsf(sh_dot3(dir, up)) > 0.99f) { up[0] = 1.0f; up[1] = 0.0f; up[2] = 0.0f; }
+
+	float proj[16], view[16];
+	sh_perspective(fov, 1.0f, zn, zf, proj);
+	sh_lookat(eye, center, up, view);
+	sh_mul(proj, view, g_shadowLightMatrix);
+}
+
+int GR_FlashlightShadowActive(void)
+{
+	return (g_PsyX_UseFlashlightShadows && g_PsyX_UsePerPixelFlashlight && g_PsyX_FlashlightActive) ? 1 : 0;
+}
+
+static GLint s_shadowPrevFBO = 0;
+static GLint s_shadowPrevViewport[4] = { 0, 0, 0, 0 };
+
+void GR_ShadowPassBegin(void)
+{
+	GR_EnsureShadowTarget();
+	GR_BuildShadowMatrix();
+
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &s_shadowPrevFBO);
+	glGetIntegerv(GL_VIEWPORT, s_shadowPrevViewport);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, g_shadowFBO);
+	glViewport(0, 0, PSYX_SHADOW_MAP_SIZE, PSYX_SHADOW_MAP_SIZE);
+
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_BLEND);
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
+	glDepthFunc(GL_LESS);
+	glClear(GL_DEPTH_BUFFER_BIT);
+
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(2.0f, 4.0f);  /* constant + slope depth bias against acne */
+
+	glUseProgram(g_shadowDepthShader);
+	if (g_shadowDepthMatrixLoc != -1)
+		glUniformMatrix4fv(g_shadowDepthMatrixLoc, 1, GL_FALSE, g_shadowLightMatrix);
+}
+
+void GR_ShadowPassDraw(int startVertex, int numVerts)
+{
+	glDrawArrays(GL_TRIANGLES, startVertex, numVerts);
+}
+
+void GR_ShadowPassEnd(void)
+{
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)s_shadowPrevFBO);
+	glViewport(s_shadowPrevViewport[0], s_shadowPrevViewport[1],
+	           s_shadowPrevViewport[2], s_shadowPrevViewport[3]);
+
+	/* We changed program/depth/blend/scissor/stencil. Sentinels that never equal a
+	 * real mode force the first color split to fully re-establish GL state. */
+	glUseProgram(0);
+	g_PreviousShader       = (ShaderID)-1;
+	g_lastBoundTexture     = (TextureID)-1;
+	g_PreviousBlendMode    = -999;
+	g_PreviousDepthMode    = -999;
+	g_PreviousStencilMode  = -999;
+	g_PreviousScissorState = -999;
+	glEnable(GL_STENCIL_TEST);
+}
+
+#else  /* !USE_OPENGL */
+int  GR_FlashlightShadowActive(void) { return 0; }
+void GR_ShadowPassBegin(void) {}
+void GR_ShadowPassDraw(int startVertex, int numVerts) { (void)startVertex; (void)numVerts; }
+void GR_ShadowPassEnd(void) {}
 #endif
 
 /* See g_PsxPresentLastFrame above. Called from PsyX_EndScene after the

@@ -1343,6 +1343,25 @@ void DrawAllSplits()
 	// next code ideally should be called before EndScene
 	GR_UpdateVertexBuffer(g_vertexBuffer, g_vertexIndex);
 
+	/* Flashlight shadow map: depth-only pre-pass over the opaque splits from the
+	 * light POV, into the shadow FBO, while the frame VAO is still bound. Skips
+	 * additive/subtractive (fire, blood, muzzle flash) — those shouldn't occlude.
+	 * Untracked 2D/UI verts self-cull in the depth shader (vsz<=0). */
+	if (GR_FlashlightShadowActive())
+	{
+		GR_ShadowPassBegin();
+		for (int i = 1; i <= g_splitIndex; i++)
+		{
+			const GPUDrawSplit& s = g_splits[i];
+			if (s.numVerts < 3)
+				continue;
+			if (s.blendMode == BM_ADD || s.blendMode == BM_ADD_QUATER_SOURCE || s.blendMode == BM_SUBTRACT)
+				continue;
+			GR_ShadowPassDraw(s.startVertex, s.numVerts);
+		}
+		GR_ShadowPassEnd();
+	}
+
 	for (int i = 1; i <= g_splitIndex; i++)
 		DrawSplit(g_splits[i]);
 

@@ -86,6 +86,12 @@ extern int							g_cfg_tonemap;
  * (launcher config + F4 in-game toggle). */
 extern int							g_PsyX_UsePerPixelFlashlight;
 
+/* PC port: real flashlight shadow mapping (depth pre-pass from the light POV;
+ * requires the per-pixel flashlight on). Runtime-settable (config + `shadows`
+ * console). Bias is the light-clip depth-compare epsilon (`shadowbias`). */
+extern int							g_PsyX_UseFlashlightShadows;
+extern float						g_PsyX_FlashlightShadowBias;
+
 /* PC port: per-pixel flashlight cone parameters, pushed once per frame by game
  * code (bodyprog world-lighting setup). Position and direction are in VIEW
  * (camera) space — the same space as the per-vertex GrVertex.vsx/vsy/vsz the GTE
