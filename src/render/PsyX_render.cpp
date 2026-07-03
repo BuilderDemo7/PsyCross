@@ -3158,18 +3158,54 @@ void GR_SwapWindow()
 	//glFinish();
 }
 
+/* PC port: force GL depth test ON for the inventory item pass (see
+ * PsyX_ForceItemDepthBegin). When set, depth stays on even for the item's
+ * semi-transparent faces (GR_SetBlendMode would otherwise GR_EnableDepth(0)),
+ * so the model's own front faces occlude its back faces (radio antenna through
+ * the body). Scoped by game code to GameState_InventoryScreen, where OT0 holds
+ * the item alone — never the live world. */
+int g_PsyX_ForceItemDepth = 0;
+
 void GR_EnableDepth(int enable)
 {
-	if (g_PreviousDepthMode == enable)
+	/* Track the APPLIED GL state (not the requested `enable`) so toggling
+	 * g_PsyX_ForceItemDepth mid-frame re-applies on the next call. */
+	int applied = ((enable && g_cfg_pgxpZBuffer) || g_PsyX_ForceItemDepth) ? 1 : 0;
+
+	if (g_PreviousDepthMode == applied)
 		return;
 
-	g_PreviousDepthMode = enable;
+	g_PreviousDepthMode = applied;
 
 #if USE_OPENGL
-	if (enable && g_cfg_pgxpZBuffer)
+	if (applied)
 		glEnable(GL_DEPTH_TEST);
 	else
 		glDisable(GL_DEPTH_TEST);
+#endif
+}
+
+/* Bracket the inventory item OT0 draw: clear depth so the item tests only
+ * against itself, force depth test+write on for every item face regardless of
+ * blend, then restore. Both are no-ops for any other pass (game code only calls
+ * them around the GameState_InventoryScreen item draw). */
+extern "C" void PsyX_ForceItemDepthBegin(void)
+{
+#if USE_OPENGL
+	g_PsyX_ForceItemDepth = 1;
+	g_PreviousDepthMode = -1;   /* force next GR_EnableDepth to re-apply */
+	glDepthMask(GL_TRUE);
+	glClear(GL_DEPTH_BUFFER_BIT);
+	glEnable(GL_DEPTH_TEST);
+#endif
+}
+
+extern "C" void PsyX_ForceItemDepthEnd(void)
+{
+#if USE_OPENGL
+	g_PsyX_ForceItemDepth = 0;
+	g_PreviousDepthMode = -1;   /* force the next prim's GR_EnableDepth to re-apply */
+	glDisable(GL_DEPTH_TEST);
 #endif
 }
 
