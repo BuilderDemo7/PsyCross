@@ -785,6 +785,12 @@ void PsyX_Exit();
 int g_activeKeyboardControllers = 0x1;
 int g_altKeyState = 0;
 
+/* Mouse wheel is event-based (a notch, not a held state), so latch each scroll
+ * for a few pad reads to give the game clean press/release edges — a scroll
+ * bound to a PSX button then acts as a tap. Consumed in PsyX_Pad_BuildMouseWord. */
+int g_PsyX_WheelUpFrames   = 0;
+int g_PsyX_WheelDownFrames = 0;
+
 void PsyX_Sys_DoPollEvent()
 {
 	SDL_Event event;
@@ -818,6 +824,15 @@ void PsyX_Sys_DoPollEvent()
 
 				PsyX_Sys_DoDebugMouseMotion(event.motion.x, event.motion.y);
 				break;
+			case SDL_MOUSEWHEEL:
+			{
+				int wy = event.wheel.y;
+				if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+					wy = -wy;
+				if (wy > 0)      g_PsyX_WheelUpFrames   = 3;
+				else if (wy < 0) g_PsyX_WheelDownFrames = 3;
+				break;
+			}
 			case SDL_KEYDOWN:
 			case SDL_KEYUP:
 			{

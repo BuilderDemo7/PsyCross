@@ -423,6 +423,7 @@ static u_short PsyX_Pad_BuildKbWord(const PsyXKeyboardMapping& mapping)
  * 1..5 clears whatever PSX bits the config bound it to (g_cfg_mouseButtonMask). */
 static u_short PsyX_Pad_BuildMouseWord()
 {
+	extern int g_PsyX_WheelUpFrames, g_PsyX_WheelDownFrames;
 	u_short ret = 0xFFFF;
 	Uint32  mb  = SDL_GetMouseState(NULL, NULL);
 	int     b;
@@ -431,6 +432,20 @@ static u_short PsyX_Pad_BuildMouseWord()
 	{
 		if ((mb & SDL_BUTTON(b)) && g_cfg_mouseButtonMask[b])
 			ret &= ~g_cfg_mouseButtonMask[b];
+	}
+
+	/* Mouse wheel up/down occupy mask slots 6/7 (see Pc_ParseMouseName). Each
+	 * scroll notch latches for a few frames so it reads as a button tap; decay
+	 * the latch as it's consumed. */
+	if (g_PsyX_WheelUpFrames > 0)
+	{
+		if (g_cfg_mouseButtonMask[6]) ret &= ~g_cfg_mouseButtonMask[6];
+		g_PsyX_WheelUpFrames--;
+	}
+	if (g_PsyX_WheelDownFrames > 0)
+	{
+		if (g_cfg_mouseButtonMask[7]) ret &= ~g_cfg_mouseButtonMask[7];
+		g_PsyX_WheelDownFrames--;
 	}
 	return ret;
 }
