@@ -98,6 +98,10 @@ extern float						g_PsyX_FlashlightShadowNormalOffset;
 /* How much light a fully-occluded pixel loses (1 = black, 0.5 = soft half-shadow).
  * Keeps the close point light's oversized clutter umbras subtle. `shadowstrength`. */
 extern float						g_PsyX_FlashlightShadowStrength;
+/* Contact-shadow fade distance (view units): a receiver this far behind its
+ * occluder casts no shadow, so props drop tight contact shadows instead of tall
+ * silhouettes smeared onto far walls. `shadowfade`. */
+extern float						g_PsyX_FlashlightShadowFadeDist;
 /* First-person shadow light drop (view-space units) — offsets the shadow light
  * below the eye so FPS shadows aren't self-cancelled by a camera-coincident light. */
 extern float						g_PsyX_FlashlightShadowFpsDrop;
