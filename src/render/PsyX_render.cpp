@@ -231,6 +231,14 @@ float g_PsyX_FlashlightIntensity = 2.10f; /* cone brightness scale, 0..3 */
 float g_PsyX_FlashlightSizeFps      = 1.30f;
 float g_PsyX_FlashlightIntensityFps = 2.10f;
 int   g_PsyX_FlashlightFpsMode      = 0;
+/* FPS shadow parallax. In first person the game pins the flashlight at the eye
+ * (bodyprog_80055028.c) so the cone follows the view — but that makes the SHADOW
+ * light coincident with the camera, so the depth map equals the camera's own
+ * view and every visible surface reads as lit (no shadows). Drop the shadow
+ * light origin below the eye (view-space +Y ~ chest height) to restore the
+ * parallax that makes shadows visible; the cone still originates at the eye.
+ * TPS is unaffected (FpsMode 0). Tunable via `shadowfpsdrop`. */
+float g_PsyX_FlashlightShadowFpsDrop = 120.0f;
 float g_cfg_postProcessIntensity = 1.0f; /* post-process effect mix, 0..1 */
 float g_cfg_tonemapIntensity     = 1.0f; /* tonemap mix, 0..1 */
 
@@ -2734,6 +2742,11 @@ static void GR_BuildShadowMatrix(void)
 	float eye[3] = { g_PsyX_FlashlightPos[0], g_PsyX_FlashlightPos[1], g_PsyX_FlashlightPos[2] };
 	float dir[3] = { g_PsyX_FlashlightDir[0], g_PsyX_FlashlightDir[1], g_PsyX_FlashlightDir[2] };
 	sh_normalize3(dir);
+	/* FPS: shove the shadow light down to chest height so it's no longer at the
+	 * camera (view-space +Y = down). Without this the light-POV depth map is the
+	 * camera's own depth and nothing ever tests as shadowed. */
+	if (g_PsyX_FlashlightFpsMode)
+		eye[1] += g_PsyX_FlashlightShadowFpsDrop;
 	float center[3] = { eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2] };
 
 	float up[3] = { 0.0f, 1.0f, 0.0f };

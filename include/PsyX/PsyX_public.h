@@ -91,6 +91,9 @@ extern int							g_PsyX_UsePerPixelFlashlight;
  * console). Bias is the light-clip depth-compare epsilon (`shadowbias`). */
 extern int							g_PsyX_UseFlashlightShadows;
 extern float						g_PsyX_FlashlightShadowBias;
+/* First-person shadow light drop (view-space units) — offsets the shadow light
+ * below the eye so FPS shadows aren't self-cancelled by a camera-coincident light. */
+extern float						g_PsyX_FlashlightShadowFpsDrop;
 /* Set 1 by game code around a draw whose geometry should NOT cast a flashlight
  * shadow (Harry's own body); reset to 0 after. Per-vertex, rides the view-space FIFO. */
 extern int							g_PsyX_NoShadowCast;
