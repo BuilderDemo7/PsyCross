@@ -143,10 +143,25 @@ int RotTransPers(SVECTOR* v0, int* sxy, long* p, long* flag)
 	return sz;
 }
 
+/* PC port: raw per-vertex view-space SZ from the LAST RotTransPers3/4, captured
+ * here (before the GS TMD drawers' NormalClip/NormalColorCol clobber the SZ FIFO)
+ * so the inventory item pass can feed each face's true unquantized depth into the
+ * GL depth test — the OTZ return (gte_stszotz) is perspective-divided + clamped and
+ * too coarse to separate a radio's antenna face from its body face. Read by
+ * ITEM_PRECISE_SZ in libgs_stub.c, gated on g_PcItemPreciseDepth (inventory only). */
+unsigned short g_PsyX_RtpSz[4] = { 0, 0, 0, 0 };
+
 int RotTransPers3(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, long* sxy0, long* sxy1, long* sxy2, long* p, long* flag)
 {
 	int sz;
 	gte_RotTransPers3(v0, v1, v2, sxy0, sxy1, sxy2, p, flag, &sz);
+
+	/* Mirror the SZ FIFO 1:1 (SZ0=oldest/unused, SZ1..3 = v0..v2), matching the
+	 * indexing ApplyGtePerVertexDepth expects (triangle reads sz[1..3]). */
+	g_PsyX_RtpSz[0] = (unsigned short)C2_SZ0;
+	g_PsyX_RtpSz[1] = (unsigned short)C2_SZ1;
+	g_PsyX_RtpSz[2] = (unsigned short)C2_SZ2;
+	g_PsyX_RtpSz[3] = (unsigned short)C2_SZ3;
 
 	return sz;
 }
@@ -169,6 +184,13 @@ int RotTransPers4(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, SVECTOR* v3, long* sxy0
 	gte_stsxy(sxy3);
 	gte_stflg(flag);
 	gte_stdp(p);
+
+	/* FIFO now holds SZ0=v0, SZ1=v1, SZ2=v2, SZ3=v3 (rtps shifted the 4th in);
+	 * mirror it 1:1 for the quad path of ApplyGtePerVertexDepth (sz[0],sz[1],sz[3],sz[2]). */
+	g_PsyX_RtpSz[0] = (unsigned short)C2_SZ0;
+	g_PsyX_RtpSz[1] = (unsigned short)C2_SZ1;
+	g_PsyX_RtpSz[2] = (unsigned short)C2_SZ2;
+	g_PsyX_RtpSz[3] = (unsigned short)C2_SZ3;
 
 	*flag |= _flag;
 	gte_stszotz(&sz);
