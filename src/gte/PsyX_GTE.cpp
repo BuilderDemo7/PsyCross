@@ -293,7 +293,6 @@ static float s_pgxpFifoX[3], s_pgxpFifoY[3], s_pgxpFifoW[3];
 static float s_vsFifoX[3], s_vsFifoY[3], s_vsFifoZ[3];
 
 extern "C" int g_PgxpUseUnquantizedDepth; /* defined in PsyX_GPU.cpp */
-extern "C" int g_PsxPgxpNearClip;         /* PsyX_GPU.cpp */
 extern "C" float g_PgxpGteOfx, g_PgxpGteOfy, g_PgxpGteH; /* PsyX_GPU.cpp */
 extern "C" void VShadow_Store(void* addr, float x, float y, float z); /* PsyX_GPU.cpp */
 
