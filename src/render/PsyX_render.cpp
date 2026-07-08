@@ -261,11 +261,13 @@ int   g_PsyX_FlashlightFpsMode      = 0;
 /* FPS shadow parallax. In first person the game pins the flashlight at the eye
  * (bodyprog_80055028.c) so the cone follows the view — but that makes the SHADOW
  * light coincident with the camera, so the depth map equals the camera's own
- * view and every visible surface reads as lit (no shadows). Drop the shadow
- * light origin below the eye (view-space +Y ~ chest height) to restore the
- * parallax that makes shadows visible; the cone still originates at the eye.
- * TPS is unaffected (FpsMode 0). Tunable via `shadowfpsdrop`. */
-float g_PsyX_FlashlightShadowFpsDrop = 120.0f;
+ * view and every visible surface reads as lit (no shadows). Pull the shadow
+ * light BACK along -viewDir (behind the camera) to restore parallax so occluders
+ * throw their shadow forward onto the wall/floor; the cone still originates at
+ * the eye. (Earlier this dropped straight DOWN, which sat the light below
+ * waist-high props and threw their silhouette up out of the object's top.) TPS
+ * is unaffected (FpsMode 0). Tunable via `shadowfpsdrop`. */
+float g_PsyX_FlashlightShadowFpsDrop = 250.0f;
 float g_cfg_postProcessIntensity = 1.0f; /* post-process effect mix, 0..1 */
 float g_cfg_tonemapIntensity     = 1.0f; /* tonemap mix, 0..1 */
 
@@ -2830,11 +2832,20 @@ static void GR_BuildShadowMatrix(void)
 	float eye[3] = { g_PsyX_FlashlightPos[0], g_PsyX_FlashlightPos[1], g_PsyX_FlashlightPos[2] };
 	float dir[3] = { g_PsyX_FlashlightDir[0], g_PsyX_FlashlightDir[1], g_PsyX_FlashlightDir[2] };
 	sh_normalize3(dir);
-	/* FPS: shove the shadow light down to chest height so it's no longer at the
-	 * camera (view-space +Y = down). Without this the light-POV depth map is the
-	 * camera's own depth and nothing ever tests as shadowed. */
+	/* FPS: the game pins the flashlight at the eye, so the shadow light would sit
+	 * ON the camera (depth map == camera depth, nothing reads shadowed). Pull it
+	 * BACK along -viewDir (behind the camera) to restore parallax. This is
+	 * deliberately backward, not straight down: the eye rides above the waist-high
+	 * props, so a light behind-and-above them throws their shadow FORWARD onto the
+	 * far wall/floor. The old straight-down drop put the light BELOW those props,
+	 * projecting their silhouette steeply upward out of the top of the object
+	 * instead of onto the surface behind them. */
 	if (g_PsyX_FlashlightFpsMode)
-		eye[1] += g_PsyX_FlashlightShadowFpsDrop;
+	{
+		eye[0] -= dir[0] * g_PsyX_FlashlightShadowFpsDrop;
+		eye[1] -= dir[1] * g_PsyX_FlashlightShadowFpsDrop;
+		eye[2] -= dir[2] * g_PsyX_FlashlightShadowFpsDrop;
+	}
 	float center[3] = { eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2] };
 
 	float up[3] = { 0.0f, 1.0f, 0.0f };

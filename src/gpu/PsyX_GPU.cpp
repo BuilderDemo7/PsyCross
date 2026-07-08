@@ -1538,10 +1538,14 @@ void DrawAllSplits()
 	// next code ideally should be called before EndScene
 	GR_UpdateVertexBuffer(g_vertexBuffer, g_vertexIndex);
 
-	/* Flashlight shadow map: depth-only pre-pass over the opaque splits from the
-	 * light POV, into the shadow FBO, while the frame VAO is still bound. Skips
-	 * additive/subtractive (fire, blood, muzzle flash) — those shouldn't occlude.
-	 * Untracked 2D/UI verts self-cull in the depth shader (vsz<=0). */
+	/* Flashlight shadow map: depth-only pre-pass over the OPAQUE splits from the
+	 * light POV, into the shadow FBO, while the frame VAO is still bound. Only
+	 * BM_NONE (opaque) casts — every semi-transparent mode is skipped so effects
+	 * don't throw hard shadows: additive/subtractive (fire, blood) AND the 50/50
+	 * BM_AVERAGE the PC muzzle flash uses (a quad at the muzzle, right next to the
+	 * close flashlight, was flashing a huge gun/magazine silhouette on the wall
+	 * for the frame or two it existed). Untracked 2D/UI verts self-cull in the
+	 * depth shader (vsz<=0). */
 	if (GR_FlashlightShadowActive())
 	{
 		GR_ShadowPassBegin();
@@ -1550,7 +1554,7 @@ void DrawAllSplits()
 			const GPUDrawSplit& s = g_splits[i];
 			if (s.numVerts < 3)
 				continue;
-			if (s.blendMode == BM_ADD || s.blendMode == BM_ADD_QUATER_SOURCE || s.blendMode == BM_SUBTRACT)
+			if (s.blendMode != BM_NONE)
 				continue;
 			GR_ShadowPassDraw(s.startVertex, s.numVerts);
 		}
