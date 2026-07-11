@@ -1398,16 +1398,25 @@ ShaderID GR_Shader_Compile(const char* source)
 	}
 
 	/* Affine (non-perspective-correct) texture mapping — matches PSX GPU behaviour.
-	 * Uses noperspective interpolation qualifier (GLSL 1.30+, desktop only). */
+	 * Uses noperspective interpolation qualifier (GLSL 1.30+, desktop only).
+	 * centroid keeps UV interpolation inside the primitive under MSAA: edge
+	 * samples otherwise extrapolate texcoords into the neighboring VRAM-atlas
+	 * cell (the "weird lines"/light-texture artifacts, worst at 8x). Identical
+	 * to center sampling when MSAA is off, so the non-MSAA image is unchanged. */
+#if defined(ES2_SHADERS)
+	#define SH_TC_CENTROID ""
+#else
+	#define SH_TC_CENTROID "centroid "
+#endif
 	if (g_cfg_affineTextures)
 	{
-		strcat(extra_vs_defines, "#define AFFINE_VARYING noperspective varying\n");
-		strcat(extra_fs_defines, "#define AFFINE_VARYING noperspective varying\n");
+		strcat(extra_vs_defines, "#define AFFINE_VARYING noperspective " SH_TC_CENTROID "varying\n");
+		strcat(extra_fs_defines, "#define AFFINE_VARYING noperspective " SH_TC_CENTROID "varying\n");
 	}
 	else
 	{
-		strcat(extra_vs_defines, "#define AFFINE_VARYING varying\n");
-		strcat(extra_fs_defines, "#define AFFINE_VARYING varying\n");
+		strcat(extra_vs_defines, "#define AFFINE_VARYING " SH_TC_CENTROID "varying\n");
+		strcat(extra_fs_defines, "#define AFFINE_VARYING " SH_TC_CENTROID "varying\n");
 	}
 
 	const char* vs_list[] = { GLSL_HEADER_VERT, extra_vs_defines, source };
