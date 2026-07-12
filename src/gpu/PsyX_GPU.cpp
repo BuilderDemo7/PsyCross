@@ -185,6 +185,11 @@ extern "C" { float g_PgxpEdgeMax = 8192.0f; }
  * distance. 0 = original quantized SZ3 (for A/B). Live-tunable via console `pgxpdepth`. */
 extern "C" { int g_PgxpUseUnquantizedDepth = 1; }
 
+/* Whole-town render mode flag (docs/WholeMap_Far_Projection_Task.md). Set by the
+ * game to Pc_WholeMapDrawActive() around the world-chunk draw so GTE_RotTransPers
+ * re-projects far vertices from unclamped view coords. 0 = legacy path untouched. */
+extern "C" { int g_PsxWholeMapFar = 0; }
+
 /* PGXP near-plane clipping (docs/PGXP_NearClip_Design.md). A poly that straddles
  * the camera plane has behind-the-eye vertices with no valid projection (SZ3==0 ->
  * W=0); PSX hardware — and this port until now — fell back to affine for them,
@@ -691,8 +696,8 @@ struct GPUDrawSplit
 
 	int				drawPrimMode;
 
-	u_short			startVertex;
-	u_short			numVerts;
+	unsigned int	startVertex; /* widened from u_short: MAX_VERTEX_BUFFER_SIZE now > 65535 */
+	unsigned int	numVerts;
 
 	const char*		debugText;
 };
@@ -1698,6 +1703,24 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
 		uintptr_t basePacket = reinterpret_cast<uintptr_t>(p);
 		for (int safety = 0; safety < 16384; safety++)
 		{
+			/* Whole-town mode can submit far more geometry than a streamed frame.
+			 * The flat vertex buffer is hard-capped at MAX_VERTEX_BUFFER_SIZE
+			 * (GPUDrawSplit indices are u_short), and the poly emit paths advance
+			 * g_vertexIndex with no per-prim bounds check. Stop the walk before a
+			 * MakeVertex* write could run past the array (up to 12 verts/prim)
+			 * instead of corrupting memory. The per-chunk frustum reject keeps the
+			 * real draw set well under this; a one-shot warning flags any overrun.
+			 * Reserve 24 to cover the largest single-prim emit (LINE_F4 = 18). */
+			if (g_vertexIndex + 24 > MAX_VERTEX_BUFFER_SIZE)
+			{
+				static int s_vbufFullWarned = 0;
+				if (!s_vbufFullWarned)
+				{
+					s_vbufFullWarned = 1;
+					eprintinfo("[VBUF] vertex buffer full (%d verts), truncating OT walk\n", g_vertexIndex);
+				}
+				break;
+			}
 			const int tagLength = getlen(basePacket);
 			if (tagLength > 0 && tagLength <= 32)
 			{
