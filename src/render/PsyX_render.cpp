@@ -2332,6 +2332,33 @@ void GR_SetScissorState(int enable)
 	g_PreviousScissorState = enable;
 }
 
+/* PC port: map a window-pixel point to a [0,1] fraction of the letterboxed 4:3
+ * display viewport — the exact pillarbox rect GR_SetOffscreenState installs
+ * below. Used by the mouse-cursor feature to convert an OS cursor position into
+ * the game's 2D space. Returns 1 if the point is inside the viewport (0 = in the
+ * black bars). Mirrors the viewport block near "Display viewport" below; keep in
+ * sync if that math changes. */
+extern "C" int PsyX_MapWindowToViewport(int mx, int my, float* outFracX, float* outFracY)
+{
+	int vpX = 0, vpY = 0, vpW = g_windowWidth, vpH = g_windowHeight;
+	const bool wantPillarbox =
+		(g_PcHorPlusEnabled && g_PcWidescreenMode == 0) ||
+		(!g_PcHorPlusEnabled && g_PcMenuPillarbox);
+	if (wantPillarbox && g_windowHeight > 0) {
+		const float psxAspect = 4.0f / 3.0f;
+		const float winAspect = (float)g_windowWidth / (float)g_windowHeight;
+		if (winAspect > psxAspect) {
+			vpW = (int)(g_windowHeight * psxAspect + 0.5f);
+			vpX = (g_windowWidth - vpW) / 2;
+		}
+	}
+	const float fx = (vpW > 0) ? (float)(mx - vpX) / (float)vpW : 0.0f;
+	const float fy = (vpH > 0) ? (float)(my - vpY) / (float)vpH : 0.0f;
+	if (outFracX) *outFracX = fx;
+	if (outFracY) *outFracY = fy;
+	return (fx >= 0.0f && fx <= 1.0f && fy >= 0.0f && fy <= 1.0f) ? 1 : 0;
+}
+
 void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 {
 	if (enable)

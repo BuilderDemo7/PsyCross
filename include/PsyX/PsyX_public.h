@@ -159,6 +159,12 @@ extern int							g_PsxDitherSuppressed;
 extern GameDebugKeysHandlerFunc		g_dbg_gameDebugKeys;
 extern GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse;
 
+/* PC port: map a window-pixel point to a [0,1] fraction of the letterboxed 4:3
+ * display viewport (the pillarbox rect the renderer installs). Returns 1 if the
+ * point is inside the viewport, 0 if it falls in the black bars. Used to convert
+ * an OS mouse position into the game's 2D coordinate space. */
+extern int							PsyX_MapWindowToViewport(int mx, int my, float* outFracX, float* outFracY);
+
 /* PC port: route PsyX logging into the host's stdio stream (pass NULL to
  * silence PsyX logging entirely). Call BEFORE PsyX_Initialise so PsyX never
  * creates its own "<appName>.log". PsyX will flush but never fclose an
