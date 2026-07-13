@@ -1701,26 +1701,11 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
 		g_otBucketDepth = -1.0f;
 		// walk OT_TAG linked list with safety guards
 		uintptr_t basePacket = reinterpret_cast<uintptr_t>(p);
-		for (int safety = 0; safety < 16384; safety++)
+		/* The safety cap guards against corrupt/cyclic lists, but it counts OT
+		 * NODES (2048 buckets + one per prim) — the whole-town render mode
+		 * legitimately submits far more than the old 16k prims. */
+		for (int safety = 0; safety < (1 << 20); safety++)
 		{
-			/* Whole-town mode can submit far more geometry than a streamed frame.
-			 * The flat vertex buffer is hard-capped at MAX_VERTEX_BUFFER_SIZE
-			 * (GPUDrawSplit indices are u_short), and the poly emit paths advance
-			 * g_vertexIndex with no per-prim bounds check. Stop the walk before a
-			 * MakeVertex* write could run past the array (up to 12 verts/prim)
-			 * instead of corrupting memory. The per-chunk frustum reject keeps the
-			 * real draw set well under this; a one-shot warning flags any overrun.
-			 * Reserve 24 to cover the largest single-prim emit (LINE_F4 = 18). */
-			if (g_vertexIndex + 24 > MAX_VERTEX_BUFFER_SIZE)
-			{
-				static int s_vbufFullWarned = 0;
-				if (!s_vbufFullWarned)
-				{
-					s_vbufFullWarned = 1;
-					eprintinfo("[VBUF] vertex buffer full (%d verts), truncating OT walk\n", g_vertexIndex);
-				}
-				break;
-			}
 			const int tagLength = getlen(basePacket);
 			if (tagLength > 0 && tagLength <= 32)
 			{
@@ -1729,6 +1714,26 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
 				int primLength = 0;
 				while (currentPacket < endPacket)
 				{
+					/* Whole-town mode can submit far more geometry than one
+					 * vertex buffer holds. When the buffer nears full, FLUSH:
+					 * finalize the open split, draw the accumulated splits,
+					 * and keep walking. Painter's far->near order is preserved
+					 * across flushes (earlier flush = farther geometry, drawn
+					 * first; the GL depth buffer persists between flushes).
+					 * Checked per PRIM, not per packet — a multi-prim (or
+					 * corrupt) packet can emit far more than one prim's worth
+					 * between packet boundaries. Reserve 24 verts = the
+					 * largest single-prim emit (LINE_F4 = 18). The flashlight
+					 * shadow pre-pass inside DrawAllSplits only sees each
+					 * flush's casters, but the near geometry a flashlight can
+					 * touch is always in the FINAL flush, so shadows stay
+					 * correct in practice. */
+					if (g_vertexIndex + 24 > MAX_VERTEX_BUFFER_SIZE)
+					{
+						GPUDrawSplit& flushSplit = g_splits[g_splitIndex];
+						flushSplit.numVerts = g_vertexIndex - flushSplit.startVertex;
+						DrawAllSplits();
+					}
 					primLength = ParsePrimitive(reinterpret_cast<P_TAG*>(currentPacket));
 					if (primLength <= 0) break;
 					currentPacket += (primLength + P_LEN) * sizeof(u_int);
