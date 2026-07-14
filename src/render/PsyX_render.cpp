@@ -58,6 +58,9 @@ extern IDXGISwapChain* g_d3d11_swapchain;
 extern ID3D11RenderTargetView* g_d3d11_renderTargetView;
 extern ID3D11DepthStencilView* g_d3d11_depthStencilView;
 
+extern ID3D11Texture2D* g_d3d11_vramTexture;
+extern ID3D11ShaderResourceView* g_d3d11_vramSRV;
+
 #endif
 
 
@@ -1656,7 +1659,9 @@ ShaderID GR_Shader_Compile(const char* source)
 	return program;
 }
 #else
-#error
+#if USE_D3DX
+// TODO: GLSL shaders to HLSL shaders
+#endif
 #endif
 
 //--------------------------------------------------------------------------------------------
@@ -1681,6 +1686,7 @@ void GR_GenerateCommonTextures()
 
 TextureID GR_CreateRGBATexture(int width, int height, u_char* data /*= nullptr*/)
 {
+#if USE_OPENGL
 	TextureID newTexture;
 	glGenTextures(1, &newTexture);
 
@@ -1696,6 +1702,33 @@ TextureID GR_CreateRGBATexture(int width, int height, u_char* data /*= nullptr*/
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	return newTexture;
+#endif
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+
+    if (FAILED(hr)) {
+        eprinterr("Failed to create RGBA texture!\n");
+        return nullptr;
+    }
+
+    // Create SRV so shaders can sample it
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    hr = g_d3d11_device->CreateShaderResourceView(texture, &srvDesc, &srv);
+    if (FAILED(hr)) {
+        eprinterr("Failed to create SRV for RGBA texture!\n");
+        texture->Release();
+        return nullptr;
+    }
+
+    // Store SRV as the TextureID equivalent
+    return srv;
+#endif
+#endif
 }
 
 void GR_CompilePSXShader(GTEShader* sh, const char* source)
@@ -1896,7 +1929,44 @@ int GR_InitialisePSX()
 		glBindVertexArray(0);
 	}
 #else
-#error
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+	D3D11_TEXTURE2D_DESC texDesc = {};
+	texDesc.Width = VRAM_WIDTH;
+	texDesc.Height = VRAM_HEIGHT;
+	texDesc.MipLevels = 1;
+	texDesc.ArraySize = 1;
+	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	texDesc.SampleDesc.Count = 1;
+	texDesc.Usage = D3D11_USAGE_DEFAULT;
+	texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+	g_d3d11_device->CreateTexture2D(&texDesc, nullptr, &g_fbTexture);
+	g_d3d11_device->CreateRenderTargetView(g_fbTexture, nullptr, &g_fbRTV);
+	g_d3d11_device->CreateShaderResourceView(g_fbTexture, nullptr, &g_fbSRV);
+
+	D3D11_TEXTURE2D_DESC offDesc = texDesc; // same as above
+	g_d3d11_device->CreateTexture2D(&offDesc, nullptr, &g_offscreenRTTexture);
+	g_d3d11_device->CreateRenderTargetView(g_offscreenRTTexture, nullptr, &g_offscreenRTV);
+	g_d3d11_device->CreateShaderResourceView(g_offscreenRTTexture, nullptr, &g_offscreenSRV);
+
+	for (int i = 0; i < 2; i++) {
+		g_d3d11_device->CreateTexture2D(&texDesc, nullptr, &g_vramTexturesDouble[i]);
+		g_d3d11_device->CreateShaderResourceView(g_vramTexturesDouble[i], nullptr, &g_vramSRV[i]);
+	}
+	g_vramTexture = g_vramTexturesDouble[0];
+
+	D3D11_BUFFER_DESC vbDesc = {};
+	vbDesc.Usage = D3D11_USAGE_DYNAMIC;
+	vbDesc.ByteWidth = sizeof(GrVertex) * MAX_VERTEX_BUFFER_SIZE;
+	vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+	for (int i = 0; i < MAX_NUM_VERTEX_BUFFERS; i++) {
+		g_d3d11_device->CreateBuffer(&vbDesc, nullptr, &g_d3d11_vertexBuffer[i]);
+	}
+#endif
+#endif
 #endif
 
 	GR_InitPostProcess();
@@ -2032,6 +2102,7 @@ void GR_SetShader(const ShaderID shader)
 
 void GR_SetTexture(TextureID texture, TexFormat texFormat)
 {
+#if USE_OPENGL
 	switch (texFormat)
 	{
 	case TF_4_BIT:
@@ -2292,6 +2363,20 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 #endif
 
 	g_lastBoundTexture = texture;
+#endif
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+    // Bind the texture SRV to slot 0 of the pixel shader
+    g_d3d11_context->PSSetShaderResources(0, 1, &textureSRV);
+
+    // Choose sampler (nearest or linear)
+    ID3D11SamplerState* sampler = g_cfg_bilinearFiltering ? g_samplerLinear : g_samplerNearest;
+    g_d3d11_context->PSSetSamplers(0, 1, &sampler);
+
+    // Track last bound texture (optional, like your OpenGL version)
+    g_lastBoundTexture = textureSRV;
+#endif
+#endif
 }
 
 void GR_SetOverrideTextureSize(int width, int height, int offsetX, int offsetY)
@@ -2384,6 +2469,24 @@ void GR_Clear(int x, int y, int w, int h, unsigned char r, unsigned char g, unsi
 
 	glClearColor(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#elif defined(RENDERER_D3D11)
+    // Convert to normalized float color
+    float clearColor[4] = {
+        r / 255.0f,
+        g / 255.0f,
+        b / 255.0f,
+        1.0f
+    };
+
+    // Clear render target
+    g_d3d11_context->ClearRenderTargetView(g_d3d11_renderTargetView, clearColor);
+
+    // Clear depth/stencil
+    g_d3d11_context->ClearDepthStencilView(
+        g_d3d11_depthStencilView,
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+        1.0f, 0
+    );
 #endif
 }
 
@@ -2391,6 +2494,7 @@ void GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height
 {
 #if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
 
+#if USE_OPENGL
 #if USE_OPENGL
 
 #define FLIP_Y (VRAM_HEIGHT - i - 1)
@@ -2421,6 +2525,10 @@ void GR_SaveVRAM(const char* outputFileName, int x, int y, int width, int height
 	fclose(fp);
 
 #undef FLIP_Y
+#endif
+#if USE_D3DX
+	// TODO: maybe find a way to dump the DX v-ram
+#endif
 #endif
 }
 
@@ -2911,6 +3019,7 @@ static const char* s_postShaderSrc =
 
 void GR_InitPostProcess(void)
 {
+#if USE_OPENGL
 	if (g_postShader != (ShaderID)-1)
 		return;
 
@@ -2923,10 +3032,15 @@ void GR_InitPostProcess(void)
 	g_postLoc_tmInt   = glGetUniformLocation(g_postShader, "u_tmIntensity");
 
 	glGenVertexArrays(1, &g_postVAO);
+#endif
+#ifdef RENDERER_D3D11
+	// TODO: DX 11 post-process
+#endif
 }
 
 static void GR_EnsurePostTarget(int w, int h)
 {
+#if USE_OPENGL
 	if (g_postTex != (TextureID)-1 && g_postW == w && g_postH == h)
 		return;
 
@@ -2950,6 +3064,10 @@ static void GR_EnsurePostTarget(int w, int h)
 	glBindFramebuffer(GL_FRAMEBUFFER, g_postFBO);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_postTex, 0);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
+#if USE_D3DX
+	// TODO: DX 11 ensure post target
+#endif
 }
 
 /* Draw a full-screen triangle sampling `tex` into the currently bound default
@@ -2958,6 +3076,7 @@ static void GR_EnsurePostTarget(int w, int h)
  * cached GL state so the next frame's prims re-establish it. */
 static void GR_DrawFullscreenTexture(TextureID tex, int mode)
 {
+#if USE_OPENGL
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glViewport(0, 0, g_windowWidth, g_windowHeight);
 
@@ -2997,6 +3116,52 @@ static void GR_DrawFullscreenTexture(TextureID tex, int mode)
 	g_PreviousBlendMode   = BM_NONE;
 	g_PreviousDepthMode   = 0;
 	g_PreviousScissorState = 0;
+#endif
+#if USE_D3DX
+#if defined(RENDERER_D3D11)
+    // Disable depth/stencil/blend for this pass
+    g_d3d11_context->OMSetDepthStencilState(nullptr, 0);
+    g_d3d11_context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+
+    // Set primitive topology to triangle list
+    g_d3d11_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Bind post-process shader (vertex + pixel)
+    g_d3d11_context->VSSetShader(g_postVS, nullptr, 0);
+    g_d3d11_context->PSSetShader(g_postPS, nullptr, 0);
+
+    // Update constant buffer with post-process parameters
+    PostProcessConstants cbData = {};
+    cbData.mode = mode;
+    cbData.texSize = XMFLOAT2(
+        g_windowWidth  > 0 ? 1.0f / (float)g_windowWidth  : 0.0f,
+        g_windowHeight > 0 ? 1.0f / (float)g_windowHeight : 0.0f
+    );
+    cbData.time = (float)(g_postFrame & 1023);
+    cbData.tonemap = g_cfg_tonemap;
+    cbData.postIntensity = g_cfg_postProcessIntensity;
+    cbData.tmIntensity = g_cfg_tonemapIntensity;
+
+    g_d3d11_context->UpdateSubresource(g_postConstantBuffer, 0, nullptr, &cbData, 0, 0);
+
+    g_d3d11_context->VSSetConstantBuffers(0, 1, &g_postConstantBuffer);
+    g_d3d11_context->PSSetConstantBuffers(0, 1, &g_postConstantBuffer);
+
+    // Bind texture SRV + sampler
+    g_d3d11_context->PSSetShaderResources(0, 1, &texSRV);
+    g_d3d11_context->PSSetSamplers(0, 1, &g_postSampler);
+
+    // Draw fullscreen triangle (3 vertices, no VB needed if you use a shader-generated triangle)
+    g_d3d11_context->Draw(3, 0);
+
+    // Reset cached state trackers
+    g_PreviousShader       = (ShaderID)-1;
+    g_lastBoundTexture     = (TextureID)-1;
+    g_PreviousBlendMode    = BM_NONE;
+    g_PreviousDepthMode    = 0;
+    g_PreviousScissorState = 0;
+#endif
+#endif
 }
 
 /* PC port: post-process the composed backbuffer in place. Resolves the (possibly
@@ -3011,6 +3176,7 @@ void GR_PostProcess(void)
 
 	GR_EnsurePostTarget(g_windowWidth, g_windowHeight);
 
+#if USE_OPENGL
 	/* Resolve/copy backbuffer -> single-sample source texture (same size, so
 	 * this is a legal multisample resolve when MSAA is on). */
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -3018,6 +3184,12 @@ void GR_PostProcess(void)
 	glBlitFramebuffer(0, 0, g_windowWidth, g_windowHeight, 0, 0, g_postW, g_postH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+#endif
+#if USE_D3DX
+#if RENDERER_D3D11
+	// TODO: DX 11 draw post-process
+#endif
+#endif
 
 	g_postFrame++;
 	GR_DrawFullscreenTexture(g_postTex, g_cfg_postProcess);
@@ -3109,6 +3281,7 @@ static void sh_mul(const float* a, const float* b, float* r)  /* r = a * b */
 
 static void GR_EnsureShadowTarget(void)
 {
+#if USE_OPENGL
 	if (g_shadowFBO != 0)
 		return;
 
@@ -3138,10 +3311,15 @@ static void GR_EnsureShadowTarget(void)
 		g_shadowDepthShader = GR_Shader_Compile(s_shadowDepthShaderSrc);
 		g_shadowDepthMatrixLoc = glGetUniformLocation(g_shadowDepthShader, "u_shadowMatrix");
 	}
+#endif
+#if USE_D3DX
+// TODO:
+#endif
 }
 
 static void GR_BuildShadowMatrix(void)
 {
+#if USE_OPENGL
 	float sizeActive = g_PsyX_FlashlightFpsMode ? g_PsyX_FlashlightSizeFps : g_PsyX_FlashlightSize;
 	float flOuter = 1.0f - sizeActive * (1.0f - g_PsyX_FlashlightOuterCos);
 	if (flOuter < 0.05f)  flOuter = 0.05f;
@@ -3184,6 +3362,10 @@ static void GR_BuildShadowMatrix(void)
 	sh_perspective(fov, 1.0f, zn, zf, proj);
 	sh_lookat(eye, center, up, view);
 	sh_mul(proj, view, g_shadowLightMatrix);
+#endif
+#if USE_D3DX
+// TODO:
+#endif
 }
 
 int GR_FlashlightShadowActive(void)
@@ -3204,6 +3386,7 @@ static GLint s_shadowPrevViewport[4] = { 0, 0, 0, 0 };
 
 void GR_ShadowPassBegin(void)
 {
+#if USE_OPENGL
 	GR_EnsureShadowTarget();
 	GR_BuildShadowMatrix();
 
@@ -3227,15 +3410,24 @@ void GR_ShadowPassBegin(void)
 	glUseProgram(g_shadowDepthShader);
 	if (g_shadowDepthMatrixLoc != -1)
 		glUniformMatrix4fv(g_shadowDepthMatrixLoc, 1, GL_FALSE, g_shadowLightMatrix);
+#endif
+#if USE_D3DX
+// TODO:
+#endif
 }
 
 void GR_ShadowPassDraw(int startVertex, int numVerts)
 {
+#if USE_OPENGL
 	glDrawArrays(GL_TRIANGLES, startVertex, numVerts);
+#elif defined(RENDERER_D3D11)
+    g_d3d11_context->Draw(numVerts, startVertex);	
+#endif	
 }
 
 void GR_ShadowPassEnd(void)
 {
+#if USE_OPENGL
 	glDisable(GL_POLYGON_OFFSET_FILL);
 	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)s_shadowPrevFBO);
 	glViewport(s_shadowPrevViewport[0], s_shadowPrevViewport[1],
@@ -3252,6 +3444,12 @@ void GR_ShadowPassEnd(void)
 	g_PreviousStencilMode  = -999;
 	g_PreviousScissorState = -999;
 	glEnable(GL_STENCIL_TEST);
+#endif
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+	// TODO: maybe do DX 11 - GR_ShadowPassEnd
+#endif
+#endif
 }
 
 #else  /* !USE_OPENGL */
@@ -3304,6 +3502,75 @@ void GR_CaptureLastFrame(void)
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
 	g_freezeFrameValid = 1;
+#endif
+#if defined(RENDERER_D3D11)
+    // Skip if we already presented this frame
+    if (g_freezePresentedThisFrame)
+    {
+        g_freezePresentedThisFrame = 0;
+        return;
+    }
+
+    // Create freeze-frame texture if not yet created
+    if (!g_freezeFrameTex)
+    {
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width = g_windowWidth;
+        texDesc.Height = g_windowHeight;
+        texDesc.MipLevels = 1;
+        texDesc.ArraySize = 1;
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage = D3D11_USAGE_DEFAULT;
+        texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+        HRESULT hr = g_d3d11_device->CreateTexture2D(&texDesc, nullptr, &g_freezeFrameTex);
+        if (FAILED(hr)) {
+            eprinterr("Failed to create freeze-frame texture!\n");
+            return;
+        }
+    }
+
+    // If window size changed, recreate texture
+    if (g_freezeFrameW != g_windowWidth || g_freezeFrameH != g_windowHeight)
+    {
+        g_freezeFrameW = g_windowWidth;
+        g_freezeFrameH = g_windowHeight;
+
+        SAFE_RELEASE(g_freezeFrameTex);
+
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width = g_freezeFrameW;
+        texDesc.Height = g_freezeFrameH;
+        texDesc.MipLevels = 1;
+        texDesc.ArraySize = 1;
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage = D3D11_USAGE_DEFAULT;
+        texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+        HRESULT hr = g_d3d11_device->CreateTexture2D(&texDesc, nullptr, &g_freezeFrameTex);
+        if (FAILED(hr)) {
+            eprinterr("Failed to recreate freeze-frame texture!\n");
+            return;
+        }
+
+        g_freezeFrameValid = 0;
+    }
+
+    // Copy backbuffer into freeze-frame texture
+    ID3D11Texture2D* backBuffer = nullptr;
+    HRESULT hr = g_d3d11_swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    if (SUCCEEDED(hr))
+    {
+        g_d3d11_context->CopyResource(g_freezeFrameTex, backBuffer);
+        backBuffer->Release();
+        g_freezeFrameValid = 1;
+    }
+    else
+    {
+        eprinterr("Failed to get backbuffer for freeze-frame capture!\n");
+    }
 #endif
 }
 
@@ -3816,8 +4083,8 @@ void GR_DrawTriangles(int start_vertex, int triangles)
 {
 #if USE_OPENGL
 	glDrawArrays(GL_TRIANGLES, start_vertex, triangles * 3);
-#else
-#error
+#elif defined(RENDERER_D3D11)
+    g_d3d11_context->Draw(triangles * 3, start_vertex);	
 #endif
 }
 

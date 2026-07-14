@@ -57,6 +57,9 @@ IDXGISwapChain* g_d3d11_swapchain = nullptr;
 ID3D11RenderTargetView* g_d3d11_renderTargetView = nullptr;
 ID3D11DepthStencilView* g_d3d11_depthStencilView = nullptr;
 
+ID3D11Texture2D* g_d3d11_vramTexture = nullptr;
+ID3D11ShaderResourceView* g_d3d11_vramSRV = nullptr;
+
 #endif
 
 int							g_cfg_swapInterval = 0;
