@@ -49,6 +49,16 @@ int g_enableSwapInterval = 1;
 int g_skipSwapInterval = 0;
 timerCtx_t g_vblTimer;
 
+#if defined(RENDERER_D3D11)
+
+ID3D11Device* g_d3d11_device = nullptr;
+ID3D11DeviceContext* g_d3d11_context = nullptr;
+IDXGISwapChain* g_d3d11_swapchain = nullptr;
+ID3D11RenderTargetView* g_d3d11_renderTargetView = nullptr;
+ID3D11DepthStencilView* g_d3d11_depthStencilView = nullptr;
+
+#endif
+
 int							g_cfg_swapInterval = 0;
 PsyXKeyboardMapping			g_cfg_keyboardMapping;
 PsyXKeyboardMapping			g_cfg_keyboardMapping2 = {0};	/* secondary binds; 0 = SDL_SCANCODE_UNKNOWN (unset) */

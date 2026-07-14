@@ -6,9 +6,11 @@
 /*
  * Platform specific emulator setup
  */
-#if (defined(_WIN32) || defined(__APPLE__) || defined(__linux__)) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(__RPI__)
+#if (defined(__APPLE__) || defined(__linux__)) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(__RPI__)
 #   define RENDERER_OGL
 #   define USE_GLAD
+#elif defined(_WIN32)
+#	define RENDERER_D3D11
 #elif defined(__RPI__)
 #   define RENDERER_OGLES
 #   define OGLES_VERSION (3)
@@ -24,6 +26,12 @@
 #   define USE_OPENGL 1
 #else
 #   define USE_OPENGL 0
+#endif
+
+#if defined(RENDERER_D3D11)
+#   define USE_D3DX 1
+#else
+#   define USE_D3DX 0
 #endif
 
 #if OGLES_VERSION == 2
@@ -65,6 +73,20 @@
 
 #   include <EGL/egl.h>
 
+#endif
+
+ /*
+  * D3D11 (DirectX 11)
+  */
+
+#if defined (RENDERER_D3D11)
+#	include<dxgi.h>
+#	include<d3d11.h>
+#	include<d3dcompiler.h>
+
+#	pragma comment(lib, "dxgi")
+#	pragma comment(lib, "d3d11")
+#	pragma comment(lib, "D3DCompiler")
 #endif
 
   // setup renderer texture formats

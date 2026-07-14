@@ -49,6 +49,17 @@ extern "C" {
 
 extern SDL_Window* g_window;
 
+// DirectX 11 render
+#if defined(RENDERER_D3D11)
+
+extern ID3D11Device* g_d3d11_device;
+extern ID3D11DeviceContext* g_d3d11_context;
+extern IDXGISwapChain* g_d3d11_swapchain;
+extern ID3D11RenderTargetView* g_d3d11_renderTargetView;
+extern ID3D11DepthStencilView* g_d3d11_depthStencilView;
+
+#endif
+
 
 #define MAX_NUM_VERTEX_BUFFERS		(2)
 #define PSX_SCREEN_ASPECT	(240.0f / 320.0f)			// PSX screen is mapped always to this aspect
@@ -593,6 +604,113 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 }
 #endif
 
+#if defined(RENDERER_D3D11)
+int GR_InitialiseD3D11Context(char* windowName, int fullscreen)
+{
+	int windowFlags = SDL_WINDOW_RESIZABLE;
+
+	/* 0 = windowed, 1 = exclusive fullscreen, 2 = borderless (fullscreen
+	 * desktop: covers the screen at desktop resolution, no mode switch). */
+	if (fullscreen == 2)
+		windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+	else if (fullscreen)
+		windowFlags |= SDL_WINDOW_FULLSCREEN;
+
+	if(g_windowWidth <= 0 || g_windowHeight <= 0)
+		windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+
+	g_window = SDL_CreateWindow(windowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_windowWidth, g_windowHeight, windowFlags);
+
+	/* PC port: if MSAA was requested but the driver can't provide a multisample
+	 * pixel format, SDL_CreateWindow fails. Drop MSAA and retry once so the game
+	 * still launches (just without antialiasing). */
+	if (g_window == NULL && g_cfg_msaaSamples > 0)
+	{
+		eprintwarn("Window creation with %dx MSAA failed (%s); retrying without MSAA\n", g_cfg_msaaSamples, SDL_GetError());
+
+		g_cfg_msaaSamples = 0;
+		g_window = SDL_CreateWindow(windowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_windowWidth, g_windowHeight, windowFlags);
+	}
+
+	if (g_window == NULL)
+	{
+		eprinterr("Failed to initialise SDL window!\n");
+		return 0;
+	}
+	
+	// get window HWND
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
+    HWND hwnd = wmInfo.info.win.window;
+
+	// start swap chain desc
+	DXGI_SWAP_CHAIN_DESC scd = {};
+	scd.BufferCount = 1;
+	scd.BufferDesc.Width = width;
+	scd.BufferDesc.Height = height;
+	scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	scd.OutputWindow = hwnd;
+	scd.SampleDesc.Count = g_cfg_msaaSamples > 0 ? g_cfg_msaaSamples : 1;
+	scd.Windowed = !fullscreen;	
+	
+	HRESULT d3dHR = D3D11CreateDeviceAndSwapChain(
+		nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+		nullptr, 0, D3D11_SDK_VERSION,
+		&scd, &g_d3d11_swapchain, &g_d3d11_device, nullptr, &g_d3d11_context
+	);
+	
+	if (d3dHR != S_OK) {
+		eprinterr("Failed to initialise - D3D11 not supported!\n");
+		return 0;
+    }
+	
+	// Get backbuffer from swap chain
+	ID3D11Texture2D* backBuffer = nullptr;
+	HRESULT hr = g_d3d11_swapchain->GetBuffer(
+		0, __uuidof(ID3D11Texture2D), (void**)&backBuffer
+	);
+
+	if (FAILED(hr)) {
+		eprinterr("Failed to get backbuffer from swap chain!\n");
+		return 0;
+	}
+
+	// Create render target view
+	hr = g_d3d11_device->CreateRenderTargetView(
+		backBuffer, nullptr, &g_d3d11_renderTargetView
+	);
+	backBuffer->Release();
+
+	if (FAILED(hr)) {
+		eprinterr("Failed to create render target view!\n");
+		return 0;
+	}
+	
+	// create depth buffer
+	ID3D11Texture2D* depthBuffer = nullptr;
+	hr = g_d3d11_device->CreateTexture2D(&depthDesc, nullptr, &depthBuffer);
+
+	if (FAILED(hr)) {
+		eprinterr("Failed to create depth buffer!\n");
+		return 0;
+	}
+
+	hr = g_d3d11_device->CreateDepthStencilView(
+		depthBuffer, nullptr, &g_d3d11_depthStencilView
+	);
+	depthBuffer->Release();
+
+	if (FAILED(hr)) {
+		eprinterr("Failed to create depth stencil view!\n");
+		return 0;
+	}
+	
+	return 1;	
+}
+#endif
+
 int GR_InitialiseGLExt()
 {
 #ifdef USE_GLAD
@@ -622,9 +740,20 @@ int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
 
 	// Due to debugging in fullscreen
 	SDL_SetHint(SDL_HINT_ALLOW_TOPMOST, "0");
-	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+	if (!GR_InitialiseD3D11Context(windowName, fullscreen))
+	{
+		eprinterr("Failed to Initialise D3D11 Context!\n");
+		return 0;
+	}
+#endif
+#endif
 
 #if USE_OPENGL
+	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 1);
 
 	/* PC port: request MSAA on the default framebuffer when enabled. Must be
@@ -709,6 +838,44 @@ void GR_BeginScene()
 		glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 #endif
+
+#if USE_D3DX
+#ifdef RENDERER_D3D11
+    // Clear the backbuffer to a solid color
+    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // black
+    g_d3d11_context->ClearRenderTargetView(g_d3d11_renderTargetView, clearColor);
+
+    // Clear depth and stencil buffers
+    g_d3d11_context->ClearDepthStencilView(
+        g_d3d11_depthStencilView,
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+        1.0f, 0
+    );
+
+    // Set viewport
+    D3D11_VIEWPORT vp;
+    vp.Width = (FLOAT)g_windowWidth;
+    vp.Height = (FLOAT)g_windowHeight;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    vp.TopLeftX = 0;
+    vp.TopLeftY = 0;
+    g_d3d11_context->RSSetViewports(1, &vp);
+
+    // Optional: wireframe debug mode
+    if (g_dbg_wireframeMode) {
+        D3D11_RASTERIZER_DESC rsDesc = {};
+        rsDesc.FillMode = D3D11_FILL_WIREFRAME;
+        rsDesc.CullMode = D3D11_CULL_BACK;
+        rsDesc.DepthClipEnable = TRUE;
+
+        ID3D11RasterizerState* wireframeRS = nullptr;
+        g_d3d11_device->CreateRasterizerState(&rsDesc, &wireframeRS);
+        g_d3d11_context->RSSetState(wireframeRS);
+        wireframeRS->Release();
+    }
+#endif
+#endif
 	}
 }
 
@@ -721,6 +888,26 @@ void GR_EndScene()
 
 #if USE_OPENGL
 	glBindVertexArray(0);
+#endif
+#if USE_D3DX
+#if RENDERER_D3D11
+    // Present the backbuffer
+    int vsync = 1; // 1 = enable vsync, 0 = immediate
+    g_d3d11_swapchain->Present(vsync, 0);
+
+    // Reset wireframe state if needed
+    if (g_dbg_wireframeMode) {
+        D3D11_RASTERIZER_DESC rsDesc = {};
+        rsDesc.FillMode = D3D11_FILL_SOLID;
+        rsDesc.CullMode = D3D11_CULL_BACK;
+        rsDesc.DepthClipEnable = TRUE;
+
+        ID3D11RasterizerState* solidRS = nullptr;
+        g_d3d11_device->CreateRasterizerState(&rsDesc, &solidRS);
+        g_d3d11_context->RSSetState(solidRS);
+        solidRS->Release();
+    }
+#endif
 #endif
 }
 
